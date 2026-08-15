@@ -1,0 +1,2355 @@
+{
+  "datasets": [
+    {
+      "name": "workflow_status",
+      "displayName": "Current workflow status",
+      "queryLines": [
+        "WITH configured_workflows AS (\n",
+        "-- Generated from active entries in workflow-monitoring.yml.\n",
+        "SELECT CAST(NULL AS INT) AS configured_order,\n       CAST(NULL AS STRING) AS workspace_id,\n       CAST(NULL AS STRING) AS configured_job_name,\n       CAST(NULL AS STRING) AS configured_job_id,\n       CAST(NULL AS STRING) AS frequency,\n       CAST(NULL AS STRING) AS completion_time,\n       CAST(NULL AS STRING) AS timezone,\n       CAST(NULL AS STRING) AS day_of_week,\n       CAST(NULL AS DATE) AS first_deadline_date,\n       CAST(NULL AS INT) AS day_of_month\nWHERE false\n",
+        "),\n",
+        "-- Resolve each configured name or ID to the latest live job record.\n",
+        "latest_jobs AS (\n",
+        "  SELECT workspace_id, job_id, name, delete_time\n",
+        "  FROM system.lakeflow.jobs\n",
+        "  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id ORDER BY change_time DESC) = 1\n",
+        "),\n",
+        "name_matches AS (\n",
+        "  SELECT c.configured_order, COUNT(j.job_id) AS match_count, MAX(j.job_id) AS matched_job_id, MAX(j.name) AS matched_job_name\n",
+        "  FROM configured_workflows c\n",
+        "  LEFT JOIN latest_jobs j ON c.workspace_id = j.workspace_id AND c.configured_job_id IS NULL AND c.configured_job_name = j.name AND j.delete_time IS NULL\n",
+        "  GROUP BY c.configured_order\n",
+        "),\n",
+        "resolved_workflows AS (\n",
+        "  SELECT c.*,\n",
+        "    CASE WHEN c.configured_job_id IS NOT NULL THEN id_job.job_id ELSE CASE WHEN n.match_count = 1 THEN n.matched_job_id END END AS resolved_job_id,\n",
+        "    c.configured_job_name AS workflow_name,\n",
+        "    CASE\n",
+        "      WHEN c.configured_job_id IS NOT NULL AND id_job.job_id IS NULL THEN 'Missing job ID'\n",
+        "      WHEN c.configured_job_id IS NOT NULL AND id_job.name <> c.configured_job_name THEN 'Job ID and name mismatch'\n",
+        "      WHEN c.configured_job_id IS NULL AND n.match_count = 0 THEN 'Missing job name'\n",
+        "      WHEN c.configured_job_id IS NULL AND n.match_count > 1 THEN 'Ambiguous job name'\n",
+        "    END AS configuration_problem\n",
+        "  FROM configured_workflows c\n",
+        "  LEFT JOIN latest_jobs id_job ON c.workspace_id = id_job.workspace_id AND c.configured_job_id = id_job.job_id AND id_job.delete_time IS NULL\n",
+        "  LEFT JOIN name_matches n ON c.configured_order = n.configured_order\n",
+        "),\n",
+        "workflow_runs AS (\n",
+        "  SELECT r.configured_order, r.workspace_id, r.resolved_job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
+        "  FROM resolved_workflows r INNER JOIN system.lakeflow.job_run_timeline t ON r.workspace_id = t.workspace_id AND r.resolved_job_id = t.job_id\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 365)\n",
+        "  GROUP BY r.configured_order, r.workspace_id, r.resolved_job_id, t.run_id HAVING MAX(t.result_state) IS NOT NULL\n",
+        "),\n",
+        "latest_runs AS (\n",
+        "  SELECT * FROM workflow_runs\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY configured_order ORDER BY run_end_time DESC, run_id DESC) = 1\n",
+        "),\n",
+        "latest_run_compute AS (\n",
+        "  SELECT r.configured_order, CASE\n",
+        "    WHEN MAX(CASE WHEN UPPER(u.sku_name) LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 AND MAX(CASE WHEN u.sku_name IS NOT NULL AND UPPER(u.sku_name) NOT LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 THEN 'Mixed'\n",
+        "    WHEN MAX(CASE WHEN UPPER(u.sku_name) LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 THEN 'Serverless'\n",
+        "    WHEN MAX(CASE WHEN u.sku_name IS NOT NULL AND UPPER(u.sku_name) NOT LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 THEN 'Classic jobs compute'\n",
+        "    ELSE 'Unknown' END AS compute_type\n",
+        "  FROM latest_runs r\n",
+        "  LEFT JOIN system.billing.usage u ON r.workspace_id = u.workspace_id AND r.resolved_job_id = u.usage_metadata.job_id AND r.run_id = u.usage_metadata.job_run_id AND u.usage_date >= date_sub(current_date(), 365)\n",
+        "  GROUP BY r.configured_order\n",
+        "),\n",
+        "today_counts AS (\n",
+        "  SELECT configured_order,\n",
+        "    COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_today,\n",
+        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_today\n",
+        "  FROM workflow_runs\n",
+        "  WHERE to_date(from_utc_timestamp(run_end_time, 'UTC')) = to_date(from_utc_timestamp(current_timestamp(), 'UTC'))\n",
+        "  GROUP BY configured_order\n",
+        "),\n",
+        "workflow_local_dates AS (\n",
+        "  SELECT r.*, to_date(from_utc_timestamp(current_timestamp(), timezone)) AS local_today,\n",
+        "    CASE day_of_week WHEN 'sunday' THEN 1 WHEN 'monday' THEN 2 WHEN 'tuesday' THEN 3 WHEN 'wednesday' THEN 4 WHEN 'thursday' THEN 5 WHEN 'friday' THEN 6 WHEN 'saturday' THEN 7 END AS target_day\n",
+        "  FROM resolved_workflows r WHERE resolved_job_id IS NOT NULL\n",
+        "),\n",
+        "-- Build the nearby deadline dates for each supported schedule.\n",
+        "deadline_dates AS (\n",
+        "  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 1), date_add(local_today, 1))) d AS deadline_date WHERE frequency = 'daily'\n",
+        "  UNION ALL\n",
+        "  SELECT w.*, date_add(date_add(local_today, -pmod(dayofweek(local_today) - target_day, 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-1, 1)) o AS offset WHERE frequency = 'weekly'\n",
+        "  UNION ALL\n",
+        "  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-1, 1)) o AS offset WHERE frequency = 'fortnightly'\n",
+        "  UNION ALL\n",
+        "  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-1, 1)) o AS offset WHERE frequency = 'monthly'\n",
+        "),\n",
+        "deadline_instants AS (\n",
+        "  SELECT *, to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), timezone) AS deadline_utc\n",
+        "  FROM deadline_dates\n",
+        "),\n",
+        "deadline_periods AS (\n",
+        "  SELECT *, LAG(deadline_utc) OVER (PARTITION BY configured_order ORDER BY deadline_utc) AS previous_deadline_utc\n",
+        "  FROM deadline_instants\n",
+        "),\n",
+        "-- A period is met only when a successful run completed before its deadline.\n",
+        "deadline_results AS (\n",
+        "  SELECT d.configured_order, d.deadline_utc,\n",
+        "    CASE WHEN COUNT(DISTINCT CASE WHEN r.result_state = 'SUCCEEDED' THEN r.run_id END) > 0 THEN 'Met' WHEN d.deadline_utc <= current_timestamp() THEN 'Missed' ELSE 'Pending' END AS deadline_status\n",
+        "  FROM deadline_periods d\n",
+        "  LEFT JOIN workflow_runs r ON d.configured_order = r.configured_order AND r.run_end_time > d.previous_deadline_utc AND r.run_end_time <= d.deadline_utc\n",
+        "  WHERE d.previous_deadline_utc IS NOT NULL\n",
+        "  GROUP BY d.configured_order, d.deadline_utc\n",
+        "),\n",
+        "last_due AS (\n",
+        "  SELECT * FROM deadline_results WHERE deadline_utc <= current_timestamp()\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY configured_order ORDER BY deadline_utc DESC) = 1\n",
+        "),\n",
+        "next_due AS (\n",
+        "  SELECT * FROM deadline_results WHERE deadline_utc > current_timestamp()\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY configured_order ORDER BY deadline_utc) = 1\n",
+        ")\n",
+        "SELECT r.configured_order, r.workflow_name, r.configured_job_name, r.resolved_job_id AS job_id, r.frequency, r.timezone,\n",
+        "  COALESCE(c.compute_type, 'Unknown') AS compute_type, r.configuration_problem,\n",
+        "  lr.result_state AS latest_run_result, lr.run_end_time AS latest_run_end_time, n.deadline_utc AS next_deadline_utc,\n",
+        "  CASE WHEN r.resolved_job_id IS NULL THEN CAST(NULL AS STRING) WHEN l.deadline_status = 'Missed' THEN 'Missed' ELSE COALESCE(n.deadline_status, l.deadline_status, 'Pending') END AS sla_status,\n",
+        "  CASE WHEN r.configuration_problem IS NOT NULL OR r.resolved_job_id IS NULL THEN 'Configuration problem' WHEN l.deadline_status = 'Missed' THEN 'Missed' ELSE COALESCE(n.deadline_status, l.deadline_status, 'Pending') END AS health_status,\n",
+        "  1 AS monitored_workflow_count, COALESCE(t.successful_runs_today, 0) AS successful_runs_today, COALESCE(t.failed_runs_today, 0) AS failed_runs_today,\n",
+        "  CASE WHEN r.resolved_job_id IS NOT NULL AND l.deadline_status <> 'Missed' AND COALESCE(n.deadline_status, 'Pending') = 'Pending' THEN 1 ELSE 0 END AS sla_pending_flag,\n",
+        "  CASE WHEN r.resolved_job_id IS NOT NULL AND l.deadline_status = 'Missed' THEN 1 ELSE 0 END AS sla_missed_flag,\n",
+        "  CASE WHEN r.configuration_problem IS NOT NULL THEN 1 ELSE 0 END AS configuration_problem_flag,\n",
+        "  CASE WHEN r.configuration_problem IS NOT NULL OR l.deadline_status = 'Missed' THEN 1 ELSE 0 END AS needs_attention_flag\n",
+        "FROM resolved_workflows r\n",
+        "LEFT JOIN latest_runs lr ON r.configured_order = lr.configured_order\n",
+        "LEFT JOIN latest_run_compute c ON r.configured_order = c.configured_order\n",
+        "LEFT JOIN today_counts t ON r.configured_order = t.configured_order\n",
+        "LEFT JOIN last_due l ON r.configured_order = l.configured_order\n",
+        "LEFT JOIN next_due n ON r.configured_order = n.configured_order\n",
+        "ORDER BY r.configured_order"
+      ]
+    },
+    {
+      "name": "run_history",
+      "displayName": "Workflow run history",
+      "queryLines": [
+        "WITH configured_workflows AS (\n",
+        "-- Generated from active entries in workflow-monitoring.yml.\n",
+        "SELECT CAST(NULL AS INT) AS configured_order,\n       CAST(NULL AS STRING) AS workspace_id,\n       CAST(NULL AS STRING) AS configured_job_name,\n       CAST(NULL AS STRING) AS configured_job_id,\n       CAST(NULL AS STRING) AS frequency,\n       CAST(NULL AS STRING) AS completion_time,\n       CAST(NULL AS STRING) AS timezone,\n       CAST(NULL AS STRING) AS day_of_week,\n       CAST(NULL AS DATE) AS first_deadline_date,\n       CAST(NULL AS INT) AS day_of_month\nWHERE false\n",
+        "),\n",
+        "-- Resolve configured workflows, then keep only completed job runs.\n",
+        "latest_jobs AS (\n",
+        "  SELECT workspace_id, job_id, name, delete_time FROM system.lakeflow.jobs\n",
+        "  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id ORDER BY change_time DESC) = 1\n",
+        "),\n",
+        "name_matches AS (\n",
+        "  SELECT c.configured_order, COUNT(j.job_id) AS match_count, MAX(j.job_id) AS matched_job_id, MAX(j.name) AS matched_job_name\n",
+        "  FROM configured_workflows c LEFT JOIN latest_jobs j ON c.workspace_id = j.workspace_id AND c.configured_job_id IS NULL AND c.configured_job_name = j.name AND j.delete_time IS NULL\n",
+        "  GROUP BY c.configured_order\n",
+        "),\n",
+        "resolved_workflows AS (\n",
+        "  SELECT c.configured_order, c.workspace_id, c.configured_job_name AS workflow_name,\n",
+        "    CASE WHEN c.configured_job_id IS NOT NULL THEN id_job.job_id WHEN n.match_count = 1 THEN n.matched_job_id END AS resolved_job_id\n",
+        "  FROM configured_workflows c\n",
+        "  LEFT JOIN latest_jobs id_job ON c.workspace_id = id_job.workspace_id AND c.configured_job_id = id_job.job_id AND id_job.delete_time IS NULL\n",
+        "  LEFT JOIN name_matches n ON c.configured_order = n.configured_order\n",
+        "),\n",
+        "monitored_runs AS (\n",
+        "  SELECT r.configured_order, r.workflow_name, r.workspace_id, r.resolved_job_id AS job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
+        "  FROM resolved_workflows r INNER JOIN system.lakeflow.job_run_timeline t ON r.workspace_id = t.workspace_id AND r.resolved_job_id = t.job_id\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 365)\n",
+        "  GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.resolved_job_id, t.run_id HAVING MAX(t.result_state) IS NOT NULL\n",
+        "),\n",
+        "-- Billing metadata keeps compute classification in one bounded source.\n",
+        "run_compute_types AS (\n",
+        "  SELECT r.workspace_id, r.job_id, r.run_id, CASE\n",
+        "    WHEN MAX(CASE WHEN UPPER(u.sku_name) LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 AND MAX(CASE WHEN u.sku_name IS NOT NULL AND UPPER(u.sku_name) NOT LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 THEN 'Mixed'\n",
+        "    WHEN MAX(CASE WHEN UPPER(u.sku_name) LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 THEN 'Serverless'\n",
+        "    WHEN MAX(CASE WHEN u.sku_name IS NOT NULL AND UPPER(u.sku_name) NOT LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) = 1 THEN 'Classic jobs compute'\n",
+        "    ELSE 'Unknown' END AS compute_type\n",
+        "  FROM monitored_runs r LEFT JOIN system.billing.usage u ON r.workspace_id = u.workspace_id AND r.job_id = u.usage_metadata.job_id AND r.run_id = u.usage_metadata.job_run_id AND u.usage_date >= date_sub(current_date(), 365)\n",
+        "  GROUP BY r.workspace_id, r.job_id, r.run_id\n",
+        ")\n",
+        "SELECT r.workflow_name, r.job_id, r.run_id, to_date(from_utc_timestamp(r.run_end_time, 'UTC')) AS run_date, r.run_start_time, r.run_end_time,\n",
+        "  unix_timestamp(r.run_end_time) - unix_timestamp(r.run_start_time) AS duration_seconds, r.result_state,\n",
+        "  CASE WHEN r.result_state = 'SUCCEEDED' THEN 'Success' ELSE 'Failure' END AS run_outcome,\n",
+        "  c.compute_type\n",
+        "FROM monitored_runs r\n",
+        "LEFT JOIN run_compute_types c ON r.workspace_id = c.workspace_id AND r.job_id = c.job_id AND r.run_id = c.run_id\n",
+        "ORDER BY r.run_end_time DESC"
+      ],
+      "columns": [
+        {
+          "displayName": "Total Runs",
+          "description": "Completed monitored workflow runs",
+          "expression": "COUNT(`run_id`)"
+        },
+        {
+          "displayName": "Run Success Rate",
+          "description": "Share of completed runs that succeeded",
+          "expression": "TRY_DIVIDE(SUM(CASE WHEN `result_state` = 'SUCCEEDED' THEN 1 ELSE 0 END), COUNT(`run_id`))"
+        },
+        {
+          "displayName": "Average Duration Seconds",
+          "description": "Mean duration of completed workflow runs",
+          "expression": "AVG(`duration_seconds`)"
+        }
+      ]
+    },
+    {
+      "name": "sla_history",
+      "displayName": "SLA deadline history",
+      "queryLines": [
+        "WITH configured_workflows AS (\n",
+        "-- Generated from active entries in workflow-monitoring.yml.\n",
+        "SELECT CAST(NULL AS INT) AS configured_order,\n       CAST(NULL AS STRING) AS workspace_id,\n       CAST(NULL AS STRING) AS configured_job_name,\n       CAST(NULL AS STRING) AS configured_job_id,\n       CAST(NULL AS STRING) AS frequency,\n       CAST(NULL AS STRING) AS completion_time,\n       CAST(NULL AS STRING) AS timezone,\n       CAST(NULL AS STRING) AS day_of_week,\n       CAST(NULL AS DATE) AS first_deadline_date,\n       CAST(NULL AS INT) AS day_of_month\nWHERE false\n",
+        "),\n",
+        "-- Resolve workflows and collect enough run history to evaluate one year.\n",
+        "latest_jobs AS (\n",
+        "  SELECT workspace_id, job_id, name, delete_time FROM system.lakeflow.jobs\n",
+        "  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id ORDER BY change_time DESC) = 1\n",
+        "),\n",
+        "name_matches AS (\n",
+        "  SELECT c.configured_order, COUNT(j.job_id) AS match_count, MAX(j.job_id) AS matched_job_id, MAX(j.name) AS matched_job_name\n",
+        "  FROM configured_workflows c LEFT JOIN latest_jobs j ON c.workspace_id = j.workspace_id AND c.configured_job_id IS NULL AND c.configured_job_name = j.name AND j.delete_time IS NULL\n",
+        "  GROUP BY c.configured_order\n",
+        "),\n",
+        "resolved_workflows AS (\n",
+        "  SELECT c.*, c.configured_job_name AS workflow_name,\n",
+        "    CASE WHEN c.configured_job_id IS NOT NULL THEN id_job.job_id WHEN n.match_count = 1 THEN n.matched_job_id END AS resolved_job_id\n",
+        "  FROM configured_workflows c\n",
+        "  LEFT JOIN latest_jobs id_job ON c.workspace_id = id_job.workspace_id AND c.configured_job_id = id_job.job_id AND id_job.delete_time IS NULL\n",
+        "  LEFT JOIN name_matches n ON c.configured_order = n.configured_order\n",
+        "),\n",
+        "workflow_runs AS (\n",
+        "  SELECT r.configured_order, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
+        "  FROM resolved_workflows r INNER JOIN system.lakeflow.job_run_timeline t ON r.workspace_id = t.workspace_id AND r.resolved_job_id = t.job_id\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 380)\n",
+        "  GROUP BY r.configured_order, t.run_id HAVING MAX(t.result_state) IS NOT NULL\n",
+        "),\n",
+        "workflow_local_dates AS (\n",
+        "  SELECT r.*, to_date(from_utc_timestamp(current_timestamp(), timezone)) AS local_today,\n",
+        "    CASE day_of_week WHEN 'sunday' THEN 1 WHEN 'monday' THEN 2 WHEN 'tuesday' THEN 3 WHEN 'wednesday' THEN 4 WHEN 'thursday' THEN 5 WHEN 'friday' THEN 6 WHEN 'saturday' THEN 7 END AS target_day\n",
+        "  FROM resolved_workflows r WHERE resolved_job_id IS NOT NULL\n",
+        "),\n",
+        "-- Generate historical deadlines in each workflow's local timezone.\n",
+        "deadline_dates AS (\n",
+        "  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 380), date_add(local_today, 1))) d AS deadline_date WHERE frequency = 'daily'\n",
+        "  UNION ALL\n",
+        "  SELECT w.*, date_add(date_add(date_sub(local_today, 380), pmod(target_day - dayofweek(date_sub(local_today, 380)), 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(0, 56)) o AS offset WHERE frequency = 'weekly'\n",
+        "  UNION ALL\n",
+        "  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-28, 1)) o AS offset WHERE frequency = 'fortnightly'\n",
+        "  UNION ALL\n",
+        "  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-13, 1)) o AS offset WHERE frequency = 'monthly'\n",
+        "),\n",
+        "deadline_instants AS (\n",
+        "  SELECT *, to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), timezone) AS deadline_utc\n",
+        "  FROM deadline_dates WHERE deadline_date BETWEEN date_sub(local_today, 380) AND date_add(local_today, 31)\n",
+        "),\n",
+        "deadline_periods AS (\n",
+        "  SELECT *,\n",
+        "    LAG(deadline_utc) OVER (PARTITION BY configured_order ORDER BY deadline_utc) AS previous_deadline_utc,\n",
+        "    LEAD(deadline_utc) OVER (PARTITION BY configured_order ORDER BY deadline_utc) AS next_deadline_utc\n",
+        "  FROM deadline_instants\n",
+        "),\n",
+        "-- Keep SLA status separate from a later recovery so missed history never changes.\n",
+        "on_time_deadlines AS (\n",
+        "  SELECT d.configured_order, d.workflow_name, d.deadline_utc, d.next_deadline_utc, d.timezone,\n",
+        "    MIN(CASE WHEN r.result_state = 'SUCCEEDED' THEN r.run_end_time END) AS on_time_completion_utc,\n",
+        "    CASE WHEN COUNT(DISTINCT CASE WHEN r.result_state = 'SUCCEEDED' THEN r.run_id END) > 0 THEN 'Met' WHEN d.deadline_utc <= current_timestamp() THEN 'Missed' ELSE 'Pending' END AS sla_status\n",
+        "  FROM deadline_periods d\n",
+        "  LEFT JOIN workflow_runs r ON d.configured_order = r.configured_order AND r.run_end_time > d.previous_deadline_utc AND r.run_end_time <= d.deadline_utc\n",
+        "  WHERE d.previous_deadline_utc IS NOT NULL\n",
+        "  GROUP BY d.configured_order, d.workflow_name, d.deadline_utc, d.next_deadline_utc, d.timezone\n",
+        "),\n",
+        "late_recoveries AS (\n",
+        "  SELECT d.configured_order, d.deadline_utc, MIN(r.run_end_time) AS late_recovery_utc\n",
+        "  FROM deadline_periods d\n",
+        "  LEFT JOIN workflow_runs r ON d.configured_order = r.configured_order AND r.result_state = 'SUCCEEDED' AND r.run_end_time > d.deadline_utc AND r.run_end_time <= d.next_deadline_utc\n",
+        "  WHERE d.previous_deadline_utc IS NOT NULL\n",
+        "  GROUP BY d.configured_order, d.deadline_utc\n",
+        "),\n",
+        "observed_deadlines AS (\n",
+        "  SELECT d.*, COALESCE(d.on_time_completion_utc, r.late_recovery_utc) AS observed_completion_utc,\n",
+        "    CASE WHEN d.sla_status = 'Missed' AND r.late_recovery_utc IS NOT NULL THEN 'Late recovery' ELSE d.sla_status END AS delivery_state\n",
+        "  FROM on_time_deadlines d\n",
+        "  LEFT JOIN late_recoveries r ON d.configured_order = r.configured_order AND d.deadline_utc = r.deadline_utc\n",
+        "),\n",
+        "deadline_results AS (\n",
+        "  SELECT *,\n",
+        "    ROUND((unix_timestamp(deadline_utc) - unix_timestamp(observed_completion_utc)) / 60.0, 1) AS completion_margin_minutes,\n",
+        "    COALESCE(ROUND((unix_timestamp(deadline_utc) - unix_timestamp(observed_completion_utc)) / 60.0, 1), 0.0) AS display_margin_minutes\n",
+        "  FROM observed_deadlines\n",
+        "),\n",
+        "run_metrics_30d AS (\n",
+        "  SELECT configured_order, COUNT(DISTINCT run_id) AS total_runs_30d,\n",
+        "    COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_30d,\n",
+        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_30d,\n",
+        "    AVG(unix_timestamp(run_end_time) - unix_timestamp(run_start_time)) AS average_duration_seconds_30d\n",
+        "  FROM workflow_runs WHERE run_end_time >= date_sub(current_date(), 30) GROUP BY configured_order\n",
+        "),\n",
+        "priced_usage_30d AS (\n",
+        "  SELECT u.workspace_id, u.usage_metadata.job_id AS job_id, u.usage_quantity * p.pricing.effective_list.default AS list_cost_usd\n",
+        "  FROM system.billing.usage u\n",
+        "  INNER JOIN system.billing.list_prices p ON u.sku_name = p.sku_name AND u.cloud = p.cloud AND p.currency_code = 'USD' AND u.usage_end_time >= p.price_start_time AND (u.usage_end_time < p.price_end_time OR p.price_end_time IS NULL)\n",
+        "  WHERE u.workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows) AND u.billing_origin_product = 'JOBS' AND u.usage_date >= date_sub(current_date(), 30)\n",
+        "),\n",
+        "cost_metrics_30d AS (\n",
+        "  SELECT r.configured_order, SUM(u.list_cost_usd) AS estimated_list_cost_30d\n",
+        "  FROM resolved_workflows r INNER JOIN priced_usage_30d u ON r.workspace_id = u.workspace_id AND r.resolved_job_id = u.job_id\n",
+        "  GROUP BY r.configured_order\n",
+        "),\n",
+        "sla_metrics_30d AS (\n",
+        "  SELECT configured_order,\n",
+        "    COUNT(CASE WHEN sla_status IN ('Met', 'Missed') THEN 1 END) AS evaluated_deadlines_30d,\n",
+        "    COUNT(CASE WHEN sla_status = 'Met' THEN 1 END) AS met_deadlines_30d,\n",
+        "    COUNT(CASE WHEN sla_status = 'Missed' THEN 1 END) AS missed_deadlines_30d\n",
+        "  FROM deadline_results\n",
+        "  WHERE deadline_utc >= date_sub(current_date(), 30) AND deadline_utc <= current_timestamp()\n",
+        "  GROUP BY configured_order\n",
+        ")\n",
+        "SELECT d.workflow_name, to_date(from_utc_timestamp(d.deadline_utc, d.timezone)) AS deadline_date, d.deadline_utc, d.timezone,\n",
+        "  datediff(to_date(from_utc_timestamp(d.deadline_utc, d.timezone)), to_date(from_utc_timestamp(current_timestamp(), d.timezone))) AS deadline_day_offset,\n",
+        "  d.sla_status, d.delivery_state, d.observed_completion_utc, d.completion_margin_minutes, d.display_margin_minutes,\n",
+        "  CASE WHEN d.deadline_utc <= current_timestamp() THEN ROW_NUMBER() OVER (PARTITION BY d.configured_order, CASE WHEN d.deadline_utc <= current_timestamp() THEN 1 ELSE 0 END ORDER BY d.deadline_utc DESC) END AS due_deadline_recency,\n",
+        "  CAST(0.99 AS DECIMAL(4, 2)) AS sla_target_rate,\n",
+        "  TRY_DIVIDE(r.successful_runs_30d, r.total_runs_30d) AS run_success_rate_30d,\n",
+        "  TRY_DIVIDE(s.met_deadlines_30d, s.evaluated_deadlines_30d) AS sla_compliance_rate_30d,\n",
+        "  COALESCE(c.estimated_list_cost_30d, 0.0) AS estimated_list_cost_30d, r.average_duration_seconds_30d,\n",
+        "  COALESCE(r.total_runs_30d, 0) AS total_runs_30d, COALESCE(r.failed_runs_30d, 0) AS failed_runs_30d,\n",
+        "  COALESCE(s.evaluated_deadlines_30d, 0) AS evaluated_deadlines_30d, COALESCE(s.missed_deadlines_30d, 0) AS missed_deadlines_30d,\n",
+        "  CASE WHEN COALESCE(s.missed_deadlines_30d, 0) > 0 AND COALESCE(r.failed_runs_30d, 0) > 0 THEN 'Critical' WHEN COALESCE(s.missed_deadlines_30d, 0) > 0 OR COALESCE(r.failed_runs_30d, 0) > 0 THEN 'Needs attention' ELSE 'Healthy' END AS attention_level\n",
+        "FROM deadline_results d\n",
+        "LEFT JOIN run_metrics_30d r ON d.configured_order = r.configured_order\n",
+        "LEFT JOIN cost_metrics_30d c ON d.configured_order = c.configured_order\n",
+        "LEFT JOIN sla_metrics_30d s ON d.configured_order = s.configured_order\n",
+        "WHERE d.deadline_utc >= date_sub(current_date(), 365)\n",
+        "ORDER BY d.deadline_utc"
+      ],
+      "columns": [
+        {
+          "displayName": "SLA Compliance Rate",
+          "description": "Share of evaluated deadlines that were met",
+          "expression": "TRY_DIVIDE(SUM(CASE WHEN `sla_status` = 'Met' THEN 1 ELSE 0 END), SUM(CASE WHEN `sla_status` IN ('Met', 'Missed') THEN 1 ELSE 0 END))"
+        },
+        {
+          "displayName": "SLA Target Rate",
+          "description": "Reference target for SLA compliance",
+          "expression": "MAX(`sla_target_rate`)"
+        }
+      ]
+    },
+    {
+      "name": "daily_cost",
+      "displayName": "Daily estimated Databricks list cost",
+      "queryLines": [
+        "WITH configured_workflows AS (\n",
+        "-- Generated from active entries in workflow-monitoring.yml.\n",
+        "SELECT CAST(NULL AS INT) AS configured_order,\n       CAST(NULL AS STRING) AS workspace_id,\n       CAST(NULL AS STRING) AS configured_job_name,\n       CAST(NULL AS STRING) AS configured_job_id,\n       CAST(NULL AS STRING) AS frequency,\n       CAST(NULL AS STRING) AS completion_time,\n       CAST(NULL AS STRING) AS timezone,\n       CAST(NULL AS STRING) AS day_of_week,\n       CAST(NULL AS DATE) AS first_deadline_date,\n       CAST(NULL AS INT) AS day_of_month\nWHERE false\n",
+        "),\n",
+        "-- Resolve configured workflows before joining their billing usage.\n",
+        "latest_jobs AS (\n",
+        "  SELECT workspace_id, job_id, name, delete_time FROM system.lakeflow.jobs\n",
+        "  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)\n",
+        "  QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id ORDER BY change_time DESC) = 1\n",
+        "),\n",
+        "name_matches AS (\n",
+        "  SELECT c.configured_order, COUNT(j.job_id) AS match_count, MAX(j.job_id) AS matched_job_id, MAX(j.name) AS matched_job_name\n",
+        "  FROM configured_workflows c LEFT JOIN latest_jobs j ON c.workspace_id = j.workspace_id AND c.configured_job_id IS NULL AND c.configured_job_name = j.name AND j.delete_time IS NULL\n",
+        "  GROUP BY c.configured_order\n",
+        "),\n",
+        "resolved_workflows AS (\n",
+        "  SELECT c.workspace_id, c.configured_job_name AS workflow_name,\n",
+        "    CASE WHEN c.configured_job_id IS NOT NULL THEN id_job.job_id WHEN n.match_count = 1 THEN n.matched_job_id END AS resolved_job_id\n",
+        "  FROM configured_workflows c\n",
+        "  LEFT JOIN latest_jobs id_job ON c.workspace_id = id_job.workspace_id AND c.configured_job_id = id_job.job_id AND id_job.delete_time IS NULL\n",
+        "  LEFT JOIN name_matches n ON c.configured_order = n.configured_order\n",
+        "),\n",
+        "-- Apply the list price that was effective when each usage record ended.\n",
+        "priced_usage AS (\n",
+        "  SELECT u.workspace_id, u.usage_metadata.job_id AS job_id, u.usage_date, u.sku_name, u.usage_quantity * p.pricing.effective_list.default AS list_cost_usd\n",
+        "  FROM system.billing.usage u\n",
+        "  INNER JOIN system.billing.list_prices p ON u.sku_name = p.sku_name AND u.cloud = p.cloud AND p.currency_code = 'USD' AND u.usage_end_time >= p.price_start_time AND (u.usage_end_time < p.price_end_time OR p.price_end_time IS NULL)\n",
+        "  WHERE u.workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows) AND u.billing_origin_product = 'JOBS' AND u.usage_date >= date_sub(current_date(), 365)\n",
+        "),\n",
+        "workflow_daily_cost AS (\n",
+        "  SELECT r.workflow_name, u.usage_date, SUM(u.list_cost_usd) AS list_cost_usd,\n",
+        "    MAX(CASE WHEN UPPER(u.sku_name) LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) AS uses_serverless,\n",
+        "    MAX(CASE WHEN UPPER(u.sku_name) NOT LIKE '%SERVERLESS%' THEN 1 ELSE 0 END) AS uses_classic\n",
+        "  FROM resolved_workflows r INNER JOIN priced_usage u ON r.workspace_id = u.workspace_id AND r.resolved_job_id = u.job_id\n",
+        "  GROUP BY r.workflow_name, u.usage_date\n",
+        ")\n",
+        "SELECT workflow_name, usage_date, list_cost_usd, CASE WHEN uses_serverless = 1 AND uses_classic = 1 THEN 'Mixed' WHEN uses_serverless = 1 THEN 'Serverless' WHEN uses_classic = 1 THEN 'Classic jobs compute' ELSE 'Unknown' END AS compute_type\n",
+        "FROM workflow_daily_cost ORDER BY usage_date, workflow_name"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "operations",
+      "displayName": "Operations",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "operations-title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Databricks Workflow Monitoring Dashboard"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "operations-subtitle",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Current delivery health, SLA performance, and workflows that need attention. Databricks system tables are not real time."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "operations-workflow-filter",
+            "queries": [
+              {
+                "name": "workflow_status_workflow",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "sla_workflow",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow",
+                    "queryName": "workflow_status_workflow"
+                  },
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow SLA",
+                    "queryName": "sla_workflow"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workflow"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "sla-compliance",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "measure(SLA Compliance Rate)",
+                      "expression": "MEASURE(`SLA Compliance Rate`)"
+                    },
+                    {
+                      "name": "measure(SLA Target Rate)",
+                      "expression": "MEASURE(`SLA Target Rate`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "filters": [
+                    {
+                      "expression": "`deadline_date` >= date_sub(current_date(), 30) AND `deadline_date` <= current_date()"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(SLA Compliance Rate)",
+                  "displayName": "SLA compliance",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                },
+                "target": {
+                  "fieldName": "measure(SLA Target Rate)",
+                  "displayName": "Target",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "SLA compliance, last 30 days"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "successful-runs-today",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "sum(successful_runs_today)",
+                      "expression": "SUM(`successful_runs_today`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(successful_runs_today)",
+                  "displayName": "Successful runs today"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Successful runs today"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "failed-runs-today",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "sum(failed_runs_today)",
+                      "expression": "SUM(`failed_runs_today`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(failed_runs_today)",
+                  "displayName": "Failed runs today"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failed runs today"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "needs-attention",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "sum(needs_attention_flag)",
+                      "expression": "SUM(`needs_attention_flag`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(needs_attention_flag)",
+                  "displayName": "Needs attention"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Needs attention"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "service-reliability-section",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Service reliability"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "sla-compliance-trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "daily(deadline_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `deadline_date`)"
+                    },
+                    {
+                      "name": "measure(SLA Compliance Rate)",
+                      "expression": "MEASURE(`SLA Compliance Rate`)"
+                    },
+                    {
+                      "name": "measure(SLA Target Rate)",
+                      "expression": "MEASURE(`SLA Target Rate`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`deadline_date` >= date_sub(current_date(), 30) AND `deadline_date` <= current_date()"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(deadline_date)",
+                  "displayName": "Deadline date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative",
+                    "domainMin": 0,
+                    "domainMax": 1
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "measure(SLA Compliance Rate)",
+                      "displayName": "SLA compliance",
+                      "format": {
+                        "type": "number-percent",
+                        "decimalPlaces": {
+                          "type": "max",
+                          "places": 1
+                        }
+                      }
+                    },
+                    {
+                      "fieldName": "measure(SLA Target Rate)",
+                      "displayName": "99% target",
+                      "format": {
+                        "type": "number-percent",
+                        "decimalPlaces": {
+                          "type": "max",
+                          "places": 0
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "SLA compliance trend",
+                "showDescription": true,
+                "description": "Daily compliance for evaluated deadlines. The reference line is the 99% target."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 8,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "current-workflow-health",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "health_status",
+                      "expression": "`health_status`"
+                    },
+                    {
+                      "name": "sum(monitored_workflow_count)",
+                      "expression": "SUM(`monitored_workflow_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "sum(monitored_workflow_count)",
+                  "displayName": "Workflows",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "health_status",
+                  "displayName": "Health",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Met",
+                        "color": "#009E73"
+                      },
+                      {
+                        "value": "Pending",
+                        "color": "#E69F00"
+                      },
+                      {
+                        "value": "Missed",
+                        "color": "#D55E00"
+                      },
+                      {
+                        "value": "Configuration problem",
+                        "color": "#7B61A8"
+                      },
+                      {
+                        "value": "Paused",
+                        "color": "#767676"
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Current workflow health",
+                "showDescription": true,
+                "description": "Latest SLA state for every active configured workflow."
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 8,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "sla-delivery-calendar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "deadline_date",
+                      "expression": "`deadline_date`"
+                    },
+                    {
+                      "name": "deadline_utc",
+                      "expression": "`deadline_utc`"
+                    },
+                    {
+                      "name": "deadline_day_offset",
+                      "expression": "`deadline_day_offset`"
+                    },
+                    {
+                      "name": "sla_status",
+                      "expression": "`sla_status`"
+                    },
+                    {
+                      "name": "observed_completion_utc",
+                      "expression": "`observed_completion_utc`"
+                    },
+                    {
+                      "name": "completion_margin_minutes",
+                      "expression": "`completion_margin_minutes`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Shows each workflow deadline as a semantic SLA status cell.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.deadline_day_offset >= -89 && datum.deadline_day_offset <= 31\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"rect\",\"cornerRadius\":4,\"opacity\":0.9},\"encoding\":{\"x\":{\"field\":\"deadline_date\",\"type\":\"temporal\",\"title\":\"Deadline date\",\"axis\":{\"format\":\"%d %b\",\"labelAngle\":-45}},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"sla_status\",\"type\":\"nominal\",\"title\":\"SLA\",\"scale\":{\"domain\":[\"Met\",\"Pending\",\"Missed\"],\"range\":[\"#009E73\",\"#E69F00\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"deadline_utc\",\"type\":\"temporal\",\"title\":\"Deadline (UTC)\"},{\"field\":\"observed_completion_utc\",\"type\":\"temporal\",\"title\":\"Observed completion\"},{\"field\":\"completion_margin_minutes\",\"type\":\"quantitative\",\"title\":\"Minutes early (+) or late (-)\",\"format\":\".1f\"},{\"field\":\"sla_status\",\"type\":\"nominal\",\"title\":\"SLA status\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+              },
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workflow_name"
+                  },
+                  {
+                    "fieldName": "deadline_date"
+                  },
+                  {
+                    "fieldName": "deadline_utc"
+                  },
+                  {
+                    "fieldName": "deadline_day_offset"
+                  },
+                  {
+                    "fieldName": "sla_status"
+                  },
+                  {
+                    "fieldName": "observed_completion_utc"
+                  },
+                  {
+                    "fieldName": "completion_margin_minutes"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "SLA delivery calendar",
+                "showDescription": true,
+                "description": "Last 90 days plus upcoming deadlines. Select a cell to focus on one workflow."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "delivery-analysis-section",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Delivery analysis"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 21,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "delivery-margin-timeline",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "deadline_utc",
+                      "expression": "`deadline_utc`"
+                    },
+                    {
+                      "name": "observed_completion_utc",
+                      "expression": "`observed_completion_utc`"
+                    },
+                    {
+                      "name": "completion_margin_minutes",
+                      "expression": "`completion_margin_minutes`"
+                    },
+                    {
+                      "name": "display_margin_minutes",
+                      "expression": "`display_margin_minutes`"
+                    },
+                    {
+                      "name": "delivery_state",
+                      "expression": "`delivery_state`"
+                    },
+                    {
+                      "name": "due_deadline_recency",
+                      "expression": "`due_deadline_recency`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Places the latest due deadline for each workflow before or after zero.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.due_deadline_recency == 1\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"point\",\"filled\":true,\"size\":180,\"strokeWidth\":1},\"encoding\":{\"x\":{\"field\":\"display_margin_minutes\",\"type\":\"quantitative\",\"title\":\"Minutes early (+) or late (-)\",\"scale\":{\"zero\":true}},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"delivery_state\",\"type\":\"nominal\",\"title\":\"Delivery\",\"scale\":{\"domain\":[\"Met\",\"Late recovery\",\"Missed\"],\"range\":[\"#009E73\",\"#D55E00\",\"#D55E00\"]}},\"shape\":{\"field\":\"delivery_state\",\"type\":\"nominal\",\"title\":null,\"scale\":{\"domain\":[\"Met\",\"Late recovery\",\"Missed\"],\"range\":[\"circle\",\"diamond\",\"triangle-up\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"deadline_utc\",\"type\":\"temporal\",\"title\":\"Deadline (UTC)\"},{\"field\":\"observed_completion_utc\",\"type\":\"temporal\",\"title\":\"Observed completion\"},{\"field\":\"completion_margin_minutes\",\"type\":\"quantitative\",\"title\":\"Minutes early (+) or late (-)\",\"format\":\".1f\"},{\"field\":\"delivery_state\",\"type\":\"nominal\",\"title\":\"Delivery state\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+              },
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workflow_name"
+                  },
+                  {
+                    "fieldName": "deadline_utc"
+                  },
+                  {
+                    "fieldName": "observed_completion_utc"
+                  },
+                  {
+                    "fieldName": "completion_margin_minutes"
+                  },
+                  {
+                    "fieldName": "display_margin_minutes"
+                  },
+                  {
+                    "fieldName": "delivery_state"
+                  },
+                  {
+                    "fieldName": "due_deadline_recency"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latest delivery margin",
+                "showDescription": true,
+                "description": "Right of zero is early. Left is late. Missed deadlines with no recovery sit at zero."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 22,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "workflow-risk-map",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "due_deadline_recency",
+                      "expression": "`due_deadline_recency`"
+                    },
+                    {
+                      "name": "run_success_rate_30d",
+                      "expression": "`run_success_rate_30d`"
+                    },
+                    {
+                      "name": "sla_compliance_rate_30d",
+                      "expression": "`sla_compliance_rate_30d`"
+                    },
+                    {
+                      "name": "estimated_list_cost_30d",
+                      "expression": "`estimated_list_cost_30d`"
+                    },
+                    {
+                      "name": "average_duration_seconds_30d",
+                      "expression": "`average_duration_seconds_30d`"
+                    },
+                    {
+                      "name": "total_runs_30d",
+                      "expression": "`total_runs_30d`"
+                    },
+                    {
+                      "name": "failed_runs_30d",
+                      "expression": "`failed_runs_30d`"
+                    },
+                    {
+                      "name": "evaluated_deadlines_30d",
+                      "expression": "`evaluated_deadlines_30d`"
+                    },
+                    {
+                      "name": "missed_deadlines_30d",
+                      "expression": "`missed_deadlines_30d`"
+                    },
+                    {
+                      "name": "attention_level",
+                      "expression": "`attention_level`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Combines run reliability, SLA compliance, and list cost for each workflow.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.due_deadline_recency == 1 && isValid(datum.run_success_rate_30d) && isValid(datum.sla_compliance_rate_30d)\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"circle\",\"filled\":true,\"opacity\":0.82,\"strokeWidth\":1},\"encoding\":{\"x\":{\"field\":\"run_success_rate_30d\",\"type\":\"quantitative\",\"title\":\"Run success rate, 30 days\",\"scale\":{\"domain\":[0,1]},\"axis\":{\"format\":\".0%\"}},\"y\":{\"field\":\"sla_compliance_rate_30d\",\"type\":\"quantitative\",\"title\":\"SLA compliance, 30 days\",\"scale\":{\"domain\":[0,1]},\"axis\":{\"format\":\".0%\"}},\"size\":{\"field\":\"estimated_list_cost_30d\",\"type\":\"quantitative\",\"title\":\"Estimated list cost\",\"scale\":{\"range\":[140,1200]}},\"color\":{\"field\":\"attention_level\",\"type\":\"nominal\",\"title\":\"Attention\",\"scale\":{\"domain\":[\"Healthy\",\"Needs attention\",\"Critical\"],\"range\":[\"#009E73\",\"#E69F00\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"run_success_rate_30d\",\"type\":\"quantitative\",\"title\":\"Run success rate\",\"format\":\".1%\"},{\"field\":\"sla_compliance_rate_30d\",\"type\":\"quantitative\",\"title\":\"SLA compliance\",\"format\":\".1%\"},{\"field\":\"estimated_list_cost_30d\",\"type\":\"quantitative\",\"title\":\"Estimated list cost (USD)\",\"format\":\"$,.2f\"},{\"field\":\"average_duration_seconds_30d\",\"type\":\"quantitative\",\"title\":\"Average duration (seconds)\",\"format\":\",.0f\"},{\"field\":\"total_runs_30d\",\"type\":\"quantitative\",\"title\":\"Completed runs\"},{\"field\":\"failed_runs_30d\",\"type\":\"quantitative\",\"title\":\"Failed runs\"},{\"field\":\"evaluated_deadlines_30d\",\"type\":\"quantitative\",\"title\":\"Evaluated deadlines\"},{\"field\":\"missed_deadlines_30d\",\"type\":\"quantitative\",\"title\":\"Missed deadlines\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+              },
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workflow_name"
+                  },
+                  {
+                    "fieldName": "due_deadline_recency"
+                  },
+                  {
+                    "fieldName": "run_success_rate_30d"
+                  },
+                  {
+                    "fieldName": "sla_compliance_rate_30d"
+                  },
+                  {
+                    "fieldName": "estimated_list_cost_30d"
+                  },
+                  {
+                    "fieldName": "average_duration_seconds_30d"
+                  },
+                  {
+                    "fieldName": "total_runs_30d"
+                  },
+                  {
+                    "fieldName": "failed_runs_30d"
+                  },
+                  {
+                    "fieldName": "evaluated_deadlines_30d"
+                  },
+                  {
+                    "fieldName": "missed_deadlines_30d"
+                  },
+                  {
+                    "fieldName": "attention_level"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workflow reliability and cost risk",
+                "showDescription": true,
+                "description": "Higher and farther right is healthier. Bubble size shows estimated 30-day list cost."
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 22,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "workflow-health-section",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Workflow health"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 29,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "workflow-health-table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "job_id",
+                      "expression": "`job_id`"
+                    },
+                    {
+                      "name": "sla_status",
+                      "expression": "`sla_status`"
+                    },
+                    {
+                      "name": "next_deadline_utc",
+                      "expression": "`next_deadline_utc`"
+                    },
+                    {
+                      "name": "latest_run_result",
+                      "expression": "`latest_run_result`"
+                    },
+                    {
+                      "name": "latest_run_end_time",
+                      "expression": "`latest_run_end_time`"
+                    },
+                    {
+                      "name": "compute_type",
+                      "expression": "`compute_type`"
+                    },
+                    {
+                      "name": "configuration_problem",
+                      "expression": "`configuration_problem`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow"
+                  },
+                  {
+                    "fieldName": "job_id",
+                    "displayName": "Job ID"
+                  },
+                  {
+                    "fieldName": "sla_status",
+                    "displayName": "SLA"
+                  },
+                  {
+                    "fieldName": "next_deadline_utc",
+                    "displayName": "Next deadline (UTC)"
+                  },
+                  {
+                    "fieldName": "latest_run_result",
+                    "displayName": "Latest run"
+                  },
+                  {
+                    "fieldName": "latest_run_end_time",
+                    "displayName": "Latest completion"
+                  },
+                  {
+                    "fieldName": "compute_type",
+                    "displayName": "Compute"
+                  },
+                  {
+                    "fieldName": "configuration_problem",
+                    "displayName": "Configuration problem"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Current workflow health",
+                "description": "Current status and the latest system-table observation for each workflow.",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 30,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "configuration-problems-table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "workflow_status",
+                  "fields": [
+                    {
+                      "name": "configured_job_name",
+                      "expression": "`configured_job_name`"
+                    },
+                    {
+                      "name": "job_id",
+                      "expression": "`job_id`"
+                    },
+                    {
+                      "name": "configuration_problem",
+                      "expression": "`configuration_problem`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`configuration_problem` IS NOT NULL"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "configured_job_name",
+                    "displayName": "Configured workflow"
+                  },
+                  {
+                    "fieldName": "job_id",
+                    "displayName": "Resolved job ID"
+                  },
+                  {
+                    "fieldName": "configuration_problem",
+                    "displayName": "Problem"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Configuration problems"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 37,
+            "width": 12,
+            "height": 5
+          }
+        }
+      ]
+    },
+    {
+      "name": "trends-cost",
+      "displayName": "Trends & Cost",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "trends-title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Workflow Trends and Cost"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "trends-subtitle",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Run reliability, duration, and estimated Databricks list cost for the selected period."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "trends-date-filter",
+            "queries": [
+              {
+                "name": "run_date",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "run_date",
+                      "expression": "`run_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "deadline_date",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "deadline_date",
+                      "expression": "`deadline_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "usage_date",
+                "query": {
+                  "datasetName": "daily_cost",
+                  "fields": [
+                    {
+                      "name": "usage_date",
+                      "expression": "`usage_date`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "run_date",
+                    "queryName": "run_date"
+                  },
+                  {
+                    "fieldName": "deadline_date",
+                    "queryName": "deadline_date"
+                  },
+                  {
+                    "fieldName": "usage_date",
+                    "queryName": "usage_date"
+                  }
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "range": {
+                    "dataType": "DATE",
+                    "min": {
+                      "value": "now-30d/d"
+                    },
+                    "max": {
+                      "value": "now/d"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Date range"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "trends-workflow-filter",
+            "queries": [
+              {
+                "name": "run_workflow",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "sla_workflow",
+                "query": {
+                  "datasetName": "sla_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "cost_workflow",
+                "query": {
+                  "datasetName": "daily_cost",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow runs",
+                    "queryName": "run_workflow"
+                  },
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow SLA",
+                    "queryName": "sla_workflow"
+                  },
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow cost",
+                    "queryName": "cost_workflow"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workflow"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "trends-compute-filter",
+            "queries": [
+              {
+                "name": "run_compute",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "compute_type",
+                      "expression": "`compute_type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "cost_compute",
+                "query": {
+                  "datasetName": "daily_cost",
+                  "fields": [
+                    {
+                      "name": "compute_type",
+                      "expression": "`compute_type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "compute_type",
+                    "displayName": "Run compute",
+                    "queryName": "run_compute"
+                  },
+                  {
+                    "fieldName": "compute_type",
+                    "displayName": "Cost compute",
+                    "queryName": "cost_compute"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Compute"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "estimated-list-cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily_cost",
+                  "fields": [
+                    {
+                      "name": "sum(list_cost_usd)",
+                      "expression": "SUM(`list_cost_usd`)"
+                    },
+                    {
+                      "name": "daily(usage_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `usage_date`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(list_cost_usd)",
+                  "displayName": "Estimated Databricks list cost",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(usage_date)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Estimated Databricks list cost (USD)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "total-runs",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "measure(Total Runs)",
+                      "expression": "MEASURE(`Total Runs`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Total Runs)",
+                  "displayName": "Completed runs"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Completed runs"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "run-success-rate",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "measure(Run Success Rate)",
+                      "expression": "MEASURE(`Run Success Rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Run Success Rate)",
+                  "displayName": "Run success rate",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Run success rate"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "average-run-duration",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "measure(Average Duration Seconds)",
+                      "expression": "MEASURE(`Average Duration Seconds`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Average Duration Seconds)",
+                  "displayName": "Average duration",
+                  "format": {
+                    "type": "number-plain",
+                    "formatTemplate": "{{ @formatted }} sec"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Average run duration"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 4,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "run-performance-section",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Run performance"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "daily-run-outcomes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "run_date",
+                      "expression": "`run_date`"
+                    },
+                    {
+                      "name": "run_outcome",
+                      "expression": "`run_outcome`"
+                    },
+                    {
+                      "name": "count(run_id)",
+                      "expression": "COUNT(`run_id`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "run_date",
+                  "displayName": "Run date (UTC)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "count(run_id)",
+                  "displayName": "Runs",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "run_outcome",
+                  "displayName": "Outcome",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Success",
+                        "color": "#009E73"
+                      },
+                      {
+                        "value": "Failure",
+                        "color": "#D55E00"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily run outcomes",
+                "description": "Successful runs are green. Every terminal failure state is red.",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 7,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "cost-by-workflow",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily_cost",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "sum(list_cost_usd)",
+                      "expression": "SUM(`list_cost_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fields": [
+                    {
+                      "fieldName": "sum(list_cost_usd)",
+                      "displayName": "Estimated list cost",
+                      "format": {
+                        "type": "number-currency",
+                        "currencyCode": "USD",
+                        "abbreviation": "compact"
+                      }
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "workflow_name",
+                  "displayName": "Workflow",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value",
+                      "direction": "DESC"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Estimated list cost by workflow",
+                "description": "Highest estimated Databricks list cost first.",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 8,
+            "width": 5,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "daily-cost-trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily_cost",
+                  "fields": [
+                    {
+                      "name": "usage_date",
+                      "expression": "`usage_date`"
+                    },
+                    {
+                      "name": "sum(list_cost_usd)",
+                      "expression": "SUM(`list_cost_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "area",
+              "encodings": {
+                "x": {
+                  "fieldName": "usage_date",
+                  "displayName": "Usage date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "sum(list_cost_usd)",
+                      "displayName": "Estimated list cost",
+                      "format": {
+                        "type": "number-currency",
+                        "currencyCode": "USD",
+                        "abbreviation": "compact",
+                        "decimalPlaces": {
+                          "type": "max",
+                          "places": 2
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily estimated list cost",
+                "showDescription": true,
+                "description": "Databricks list cost only. Contract discounts and classic cloud VM charges are excluded."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 7,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "run-duration-trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "daily(run_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `run_date`)"
+                    },
+                    {
+                      "name": "avg(duration_seconds)",
+                      "expression": "AVG(`duration_seconds`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(run_date)",
+                  "displayName": "Run date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "fields": [
+                    {
+                      "fieldName": "avg(duration_seconds)",
+                      "displayName": "Average duration",
+                      "format": {
+                        "type": "number-plain",
+                        "formatTemplate": "{{ @formatted }} sec"
+                      }
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Average run duration",
+                "showDescription": true,
+                "description": "Daily mean duration of completed runs."
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 14,
+            "width": 5,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "run-duration-lanes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "run_id",
+                      "expression": "`run_id`"
+                    },
+                    {
+                      "name": "run_start_time",
+                      "expression": "`run_start_time`"
+                    },
+                    {
+                      "name": "run_end_time",
+                      "expression": "`run_end_time`"
+                    },
+                    {
+                      "name": "duration_seconds",
+                      "expression": "`duration_seconds`"
+                    },
+                    {
+                      "name": "result_state",
+                      "expression": "`result_state`"
+                    },
+                    {
+                      "name": "run_outcome",
+                      "expression": "`run_outcome`"
+                    },
+                    {
+                      "name": "compute_type",
+                      "expression": "`compute_type`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Shows the latest workflow runs as duration bars across time.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"window\":[{\"op\":\"row_number\",\"as\":\"run_rank\"}],\"sort\":[{\"field\":\"run_start_time\",\"order\":\"descending\"}]},{\"filter\":\"datum.run_rank <= 100\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"bar\",\"cornerRadius\":3,\"opacity\":0.88},\"encoding\":{\"x\":{\"field\":\"run_start_time\",\"type\":\"temporal\",\"title\":\"Run time (UTC)\"},\"x2\":{\"field\":\"run_end_time\"},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"run_outcome\",\"type\":\"nominal\",\"title\":\"Outcome\",\"scale\":{\"domain\":[\"Success\",\"Failure\"],\"range\":[\"#009E73\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"run_id\",\"type\":\"nominal\",\"title\":\"Run ID\"},{\"field\":\"run_start_time\",\"type\":\"temporal\",\"title\":\"Started\"},{\"field\":\"run_end_time\",\"type\":\"temporal\",\"title\":\"Completed\"},{\"field\":\"duration_seconds\",\"type\":\"quantitative\",\"title\":\"Duration (seconds)\",\"format\":\",.0f\"},{\"field\":\"result_state\",\"type\":\"nominal\",\"title\":\"Result\"},{\"field\":\"compute_type\",\"type\":\"nominal\",\"title\":\"Compute\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+              },
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workflow_name"
+                  },
+                  {
+                    "fieldName": "run_id"
+                  },
+                  {
+                    "fieldName": "run_start_time"
+                  },
+                  {
+                    "fieldName": "run_end_time"
+                  },
+                  {
+                    "fieldName": "duration_seconds"
+                  },
+                  {
+                    "fieldName": "result_state"
+                  },
+                  {
+                    "fieldName": "run_outcome"
+                  },
+                  {
+                    "fieldName": "compute_type"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latest run-duration lanes",
+                "showDescription": true,
+                "description": "Latest 100 filtered runs. Green succeeded and red failed."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 20,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "run-details-section",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Run details"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 27,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "run-details",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "run_history",
+                  "fields": [
+                    {
+                      "name": "workflow_name",
+                      "expression": "`workflow_name`"
+                    },
+                    {
+                      "name": "run_id",
+                      "expression": "`run_id`"
+                    },
+                    {
+                      "name": "run_start_time",
+                      "expression": "`run_start_time`"
+                    },
+                    {
+                      "name": "run_end_time",
+                      "expression": "`run_end_time`"
+                    },
+                    {
+                      "name": "duration_seconds",
+                      "expression": "`duration_seconds`"
+                    },
+                    {
+                      "name": "result_state",
+                      "expression": "`result_state`"
+                    },
+                    {
+                      "name": "compute_type",
+                      "expression": "`compute_type`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "workflow_name",
+                    "displayName": "Workflow"
+                  },
+                  {
+                    "fieldName": "run_id",
+                    "displayName": "Run ID"
+                  },
+                  {
+                    "fieldName": "run_start_time",
+                    "displayName": "Started"
+                  },
+                  {
+                    "fieldName": "run_end_time",
+                    "displayName": "Completed"
+                  },
+                  {
+                    "fieldName": "duration_seconds",
+                    "displayName": "Duration",
+                    "format": {
+                      "type": "number-plain",
+                      "formatTemplate": "{{ @formatted }} sec"
+                    }
+                  },
+                  {
+                    "fieldName": "result_state",
+                    "displayName": "Result"
+                  },
+                  {
+                    "fieldName": "compute_type",
+                    "displayName": "Compute"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workflow run details",
+                "description": "Completed runs, newest first.",
+                "showDescription": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 28,
+            "width": 12,
+            "height": 7
+          }
+        }
+      ]
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#F4F7FA",
+        "dark": "#101820"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#17232E"
+      },
+      "widgetBorderColor": {
+        "light": "#FFFFFF",
+        "dark": "#17232E"
+      },
+      "fontColor": {
+        "light": "#17324D",
+        "dark": "#E8F1F8"
+      },
+      "selectionColor": {
+        "light": "#0072B2",
+        "dark": "#56B4E9"
+      },
+      "visualizationColors": [
+        "#009E73",
+        "#0072B2",
+        "#E69F00",
+        "#7B61A8",
+        "#D55E00",
+        "#56B4E9",
+        "#767676"
+      ],
+      "widgetHeaderAlignment": "LEFT",
+      "fontFamily": "Inter",
+      "widgetCornerRadius": 12
+    }
+  }
+}

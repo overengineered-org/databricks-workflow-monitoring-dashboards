@@ -1,0 +1,149 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Combines run reliability, SLA compliance, and list cost for each workflow.",
+  "width": "container",
+  "height": "container",
+  "data": {
+    "name": "databricks_query"
+  },
+  "transform": [
+    {
+      "filter": "datum.due_deadline_recency == 1 && isValid(datum.run_success_rate_30d) && isValid(datum.sla_compliance_rate_30d)"
+    }
+  ],
+  "params": [
+    {
+      "name": "databricks_mark_selection",
+      "select": {
+        "type": "point",
+        "fields": [
+          "workflow_name"
+        ]
+      }
+    }
+  ],
+  "mark": {
+    "type": "circle",
+    "filled": true,
+    "opacity": 0.82,
+    "strokeWidth": 1
+  },
+  "encoding": {
+    "x": {
+      "field": "run_success_rate_30d",
+      "type": "quantitative",
+      "title": "Run success rate, 30 days",
+      "scale": {
+        "domain": [
+          0,
+          1
+        ]
+      },
+      "axis": {
+        "format": ".0%"
+      }
+    },
+    "y": {
+      "field": "sla_compliance_rate_30d",
+      "type": "quantitative",
+      "title": "SLA compliance, 30 days",
+      "scale": {
+        "domain": [
+          0,
+          1
+        ]
+      },
+      "axis": {
+        "format": ".0%"
+      }
+    },
+    "size": {
+      "field": "estimated_list_cost_30d",
+      "type": "quantitative",
+      "title": "Estimated list cost",
+      "scale": {
+        "range": [
+          140,
+          1200
+        ]
+      }
+    },
+    "color": {
+      "field": "attention_level",
+      "type": "nominal",
+      "title": "Attention",
+      "scale": {
+        "domain": [
+          "Healthy",
+          "Needs attention",
+          "Critical"
+        ],
+        "range": [
+          "#009E73",
+          "#E69F00",
+          "#D55E00"
+        ]
+      }
+    },
+    "tooltip": [
+      {
+        "field": "workflow_name",
+        "type": "nominal",
+        "title": "Workflow"
+      },
+      {
+        "field": "run_success_rate_30d",
+        "type": "quantitative",
+        "title": "Run success rate",
+        "format": ".1%"
+      },
+      {
+        "field": "sla_compliance_rate_30d",
+        "type": "quantitative",
+        "title": "SLA compliance",
+        "format": ".1%"
+      },
+      {
+        "field": "estimated_list_cost_30d",
+        "type": "quantitative",
+        "title": "Estimated list cost (USD)",
+        "format": "$,.2f"
+      },
+      {
+        "field": "average_duration_seconds_30d",
+        "type": "quantitative",
+        "title": "Average duration (seconds)",
+        "format": ",.0f"
+      },
+      {
+        "field": "total_runs_30d",
+        "type": "quantitative",
+        "title": "Completed runs"
+      },
+      {
+        "field": "failed_runs_30d",
+        "type": "quantitative",
+        "title": "Failed runs"
+      },
+      {
+        "field": "evaluated_deadlines_30d",
+        "type": "quantitative",
+        "title": "Evaluated deadlines"
+      },
+      {
+        "field": "missed_deadlines_30d",
+        "type": "quantitative",
+        "title": "Missed deadlines"
+      }
+    ]
+  },
+  "config": {
+    "autosize": {
+      "type": "fit",
+      "contains": "padding"
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}

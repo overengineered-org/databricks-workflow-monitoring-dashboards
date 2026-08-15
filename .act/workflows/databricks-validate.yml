@@ -1,0 +1,47 @@
+name: Live Databricks validation
+
+# This workflow reads Databricks but never deploys or changes workspace resources.
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repair copied worktree metadata
+        # act can copy a .git pointer that only works on the host. A disposable
+        # local repository gives the Databricks CLI valid metadata in the container.
+        run: |
+          if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -f .git
+            git init --initial-branch=local-validation
+          fi
+      - name: Require explicit Databricks inputs
+        # Never infer a profile or warehouse from a contributor's machine.
+        env:
+          DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: test -n "$DATABRICKS_CONFIG_PROFILE" && test -n "$DATABRICKS_WAREHOUSE_ID"
+      - name: Install locked Python environment
+        run: uv sync --locked
+      - name: Require local workflow monitoring configuration
+        # The real file is ignored because it contains organization-specific values.
+        run: test -f workflow-monitoring.yml
+      - name: Generate dashboard
+        run: uv run python workflow_monitoring_dashboard.py generate
+      - name: Validate SQL datasets
+        env:
+          DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: scripts/validate-sql-datasets.sh "$DATABRICKS_CONFIG_PROFILE" "$DATABRICKS_WAREHOUSE_ID"
+      - name: Validate dev bundle
+        env:
+          DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: databricks bundle validate --strict -t dev --profile "$DATABRICKS_CONFIG_PROFILE" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
+      - name: Validate prod bundle
+        env:
+          DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: databricks bundle validate --strict -t prod --profile "$DATABRICKS_CONFIG_PROFILE" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"

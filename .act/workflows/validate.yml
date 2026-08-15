@@ -1,0 +1,31 @@
+name: Local validation
+
+# This file is run by local act only. GitHub Actions is disabled for this repo.
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install locked Python environment
+        run: uv sync --locked
+      - name: Check Python formatting
+        run: uv run ruff format --check workflow_monitoring_dashboard.py tests
+      - name: Run Python lint checks
+        run: uv run ruff check workflow_monitoring_dashboard.py tests
+      - name: Run tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: Validate configuration
+        run: uv run python workflow_monitoring_dashboard.py validate --config workflow-monitoring.template.yml
+      - name: Generate dashboard
+        # Generation proves that the checked-in example supports zero active workflows.
+        run: uv run python workflow_monitoring_dashboard.py generate --config workflow-monitoring.template.yml
+      - name: Validate dashboard JSON
+        run: jq empty src/dashboards/workflow-monitoring.lvdash.json
+      - name: Check banned em dash
+        # Build the character from bytes so this file does not contain it itself.
+        run: |
+          banned_character="$(printf '\342\200\224')"
+          test -z "$(rg -l "$banned_character" --hidden --glob '!.git/**' .)"

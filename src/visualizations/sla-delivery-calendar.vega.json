@@ -1,0 +1,101 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Shows each workflow deadline as a semantic SLA status cell.",
+  "width": "container",
+  "height": "container",
+  "data": {
+    "name": "databricks_query"
+  },
+  "transform": [
+    {
+      "filter": "datum.deadline_day_offset >= -89 && datum.deadline_day_offset <= 31"
+    }
+  ],
+  "params": [
+    {
+      "name": "databricks_mark_selection",
+      "select": {
+        "type": "point",
+        "fields": [
+          "workflow_name"
+        ]
+      }
+    }
+  ],
+  "mark": {
+    "type": "rect",
+    "cornerRadius": 4,
+    "opacity": 0.9
+  },
+  "encoding": {
+    "x": {
+      "field": "deadline_date",
+      "type": "temporal",
+      "title": "Deadline date",
+      "axis": {
+        "format": "%d %b",
+        "labelAngle": -45
+      }
+    },
+    "y": {
+      "field": "workflow_name",
+      "type": "nominal",
+      "title": null,
+      "sort": "ascending"
+    },
+    "color": {
+      "field": "sla_status",
+      "type": "nominal",
+      "title": "SLA",
+      "scale": {
+        "domain": [
+          "Met",
+          "Pending",
+          "Missed"
+        ],
+        "range": [
+          "#009E73",
+          "#E69F00",
+          "#D55E00"
+        ]
+      }
+    },
+    "tooltip": [
+      {
+        "field": "workflow_name",
+        "type": "nominal",
+        "title": "Workflow"
+      },
+      {
+        "field": "deadline_utc",
+        "type": "temporal",
+        "title": "Deadline (UTC)"
+      },
+      {
+        "field": "observed_completion_utc",
+        "type": "temporal",
+        "title": "Observed completion"
+      },
+      {
+        "field": "completion_margin_minutes",
+        "type": "quantitative",
+        "title": "Minutes early (+) or late (-)",
+        "format": ".1f"
+      },
+      {
+        "field": "sla_status",
+        "type": "nominal",
+        "title": "SLA status"
+      }
+    ]
+  },
+  "config": {
+    "autosize": {
+      "type": "fit",
+      "contains": "padding"
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}

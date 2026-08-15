@@ -1,0 +1,122 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Shows the latest workflow runs as duration bars across time.",
+  "width": "container",
+  "height": "container",
+  "data": {
+    "name": "databricks_query"
+  },
+  "transform": [
+    {
+      "window": [
+        {
+          "op": "row_number",
+          "as": "run_rank"
+        }
+      ],
+      "sort": [
+        {
+          "field": "run_start_time",
+          "order": "descending"
+        }
+      ]
+    },
+    {
+      "filter": "datum.run_rank <= 100"
+    }
+  ],
+  "params": [
+    {
+      "name": "databricks_mark_selection",
+      "select": {
+        "type": "point",
+        "fields": [
+          "workflow_name"
+        ]
+      }
+    }
+  ],
+  "mark": {
+    "type": "bar",
+    "cornerRadius": 3,
+    "opacity": 0.88
+  },
+  "encoding": {
+    "x": {
+      "field": "run_start_time",
+      "type": "temporal",
+      "title": "Run time (UTC)"
+    },
+    "x2": {
+      "field": "run_end_time"
+    },
+    "y": {
+      "field": "workflow_name",
+      "type": "nominal",
+      "title": null,
+      "sort": "ascending"
+    },
+    "color": {
+      "field": "run_outcome",
+      "type": "nominal",
+      "title": "Outcome",
+      "scale": {
+        "domain": [
+          "Success",
+          "Failure"
+        ],
+        "range": [
+          "#009E73",
+          "#D55E00"
+        ]
+      }
+    },
+    "tooltip": [
+      {
+        "field": "workflow_name",
+        "type": "nominal",
+        "title": "Workflow"
+      },
+      {
+        "field": "run_id",
+        "type": "nominal",
+        "title": "Run ID"
+      },
+      {
+        "field": "run_start_time",
+        "type": "temporal",
+        "title": "Started"
+      },
+      {
+        "field": "run_end_time",
+        "type": "temporal",
+        "title": "Completed"
+      },
+      {
+        "field": "duration_seconds",
+        "type": "quantitative",
+        "title": "Duration (seconds)",
+        "format": ",.0f"
+      },
+      {
+        "field": "result_state",
+        "type": "nominal",
+        "title": "Result"
+      },
+      {
+        "field": "compute_type",
+        "type": "nominal",
+        "title": "Compute"
+      }
+    ]
+  },
+  "config": {
+    "autosize": {
+      "type": "fit",
+      "contains": "padding"
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}

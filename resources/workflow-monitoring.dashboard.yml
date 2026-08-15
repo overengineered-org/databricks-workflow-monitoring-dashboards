@@ -1,0 +1,15 @@
+resources:
+  dashboards:
+    # Keep this key stable so upgrades update the existing dashboard URL.
+    workflow_monitoring:
+      display_name: ${var.dashboard_display_name}
+      # This generated file is tracked so reviewers can inspect the final SQL.
+      file_path: ../src/dashboards/workflow-monitoring.lvdash.json
+      # The caller supplies the SQL warehouse ID with --var.
+      warehouse_id: ${var.warehouse_id}
+      # Viewers use the deployer's embedded credentials to run dashboard SQL.
+      embed_credentials: true
+      # The group can view the dashboard but cannot edit it.
+      permissions:
+        - level: CAN_READ
+          group_name: ${var.dashboard_viewer_group}

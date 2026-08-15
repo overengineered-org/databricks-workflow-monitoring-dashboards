@@ -1,0 +1,118 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Places the latest due deadline for each workflow before or after zero.",
+  "width": "container",
+  "height": "container",
+  "data": {
+    "name": "databricks_query"
+  },
+  "transform": [
+    {
+      "filter": "datum.due_deadline_recency == 1"
+    }
+  ],
+  "params": [
+    {
+      "name": "databricks_mark_selection",
+      "select": {
+        "type": "point",
+        "fields": [
+          "workflow_name"
+        ]
+      }
+    }
+  ],
+  "mark": {
+    "type": "point",
+    "filled": true,
+    "size": 180,
+    "strokeWidth": 1
+  },
+  "encoding": {
+    "x": {
+      "field": "display_margin_minutes",
+      "type": "quantitative",
+      "title": "Minutes early (+) or late (-)",
+      "scale": {
+        "zero": true
+      }
+    },
+    "y": {
+      "field": "workflow_name",
+      "type": "nominal",
+      "title": null,
+      "sort": "ascending"
+    },
+    "color": {
+      "field": "delivery_state",
+      "type": "nominal",
+      "title": "Delivery",
+      "scale": {
+        "domain": [
+          "Met",
+          "Late recovery",
+          "Missed"
+        ],
+        "range": [
+          "#009E73",
+          "#D55E00",
+          "#D55E00"
+        ]
+      }
+    },
+    "shape": {
+      "field": "delivery_state",
+      "type": "nominal",
+      "title": null,
+      "scale": {
+        "domain": [
+          "Met",
+          "Late recovery",
+          "Missed"
+        ],
+        "range": [
+          "circle",
+          "diamond",
+          "triangle-up"
+        ]
+      }
+    },
+    "tooltip": [
+      {
+        "field": "workflow_name",
+        "type": "nominal",
+        "title": "Workflow"
+      },
+      {
+        "field": "deadline_utc",
+        "type": "temporal",
+        "title": "Deadline (UTC)"
+      },
+      {
+        "field": "observed_completion_utc",
+        "type": "temporal",
+        "title": "Observed completion"
+      },
+      {
+        "field": "completion_margin_minutes",
+        "type": "quantitative",
+        "title": "Minutes early (+) or late (-)",
+        "format": ".1f"
+      },
+      {
+        "field": "delivery_state",
+        "type": "nominal",
+        "title": "Delivery state"
+      }
+    ]
+  },
+  "config": {
+    "autosize": {
+      "type": "fit",
+      "contains": "padding"
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}

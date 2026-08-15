@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/schema/workflow-monitoring.schema.json",
+  "$comment": "This schema powers editor completion. Python performs cross-field and IANA timezone checks.",
+  "title": "Databricks workflow monitoring configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "workspace_id", "default_timezone", "workflows"],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Configuration format version."
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Databricks workspace ID whose Lakeflow jobs are monitored."
+    },
+    "default_timezone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Default IANA timezone for SLA deadlines."
+    },
+    "workflows": {
+      "type": "array",
+      "description": "Only entries marked active are generated into dashboard SQL.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/active_workflow" },
+          { "$ref": "#/$defs/inactive_workflow" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "active_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_name", "monitoring_status", "sla"],
+      "properties": {
+        "job_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact Lakeflow job name shown in Databricks."
+        },
+        "job_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional stable Databricks job ID."
+        },
+        "monitoring_status": {
+          "const": "active",
+          "description": "Include this workflow in every dashboard query and metric."
+        },
+        "sla": {
+          "$ref": "#/$defs/sla",
+          "description": "Expected completion schedule for this workflow."
+        }
+      }
+    },
+    "inactive_workflow": {
+      "type": "object",
+      "required": ["monitoring_status"],
+      "properties": {
+        "monitoring_status": {
+          "const": "inactive",
+          "description": "Exclude this workflow without deleting its YAML entry."
+        }
+      },
+      "additionalProperties": true
+    },
+    "sla": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frequency", "completion_time"],
+      "properties": {
+        "frequency": {
+          "enum": ["daily", "weekly", "fortnightly", "monthly"],
+          "description": "How often a successful workflow completion is expected."
+        },
+        "completion_time": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "description": "Deadline time in 24-hour HH:MM format."
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional IANA timezone. Uses default_timezone when omitted."
+        },
+        "day_of_week": {
+          "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+          "description": "Required only for weekly schedules."
+        },
+        "first_deadline_date": {
+          "type": "string",
+          "format": "date",
+          "description": "First deadline in a repeating 14-day schedule."
+        },
+        "day_of_month": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31,
+          "description": "Monthly deadline day. Short months use their final day."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+bundle:
+  name: databricks-workflow-monitoring-dashboards
+
+# Keep resource definitions small by storing each resource in resources/.
+include:
+  - resources/*.yml
+
+# The warehouse is BYO and required at command time. No workspace-specific ID
+# or Databricks profile is stored in this public bundle.
+variables:
+  warehouse_id:
+    description: SQL warehouse ID used by the dashboard
+  dashboard_display_name:
+    description: Deployed dashboard display name
+    default: Databricks Workflow Monitoring Dashboard
+  dashboard_viewer_group:
+    description: Databricks group granted CAN_READ
+    default: users
+
+targets:
+  # Development mode adds the standard Databricks development safeguards.
+  dev:
+    default: true
+    mode: development
+  # Production uses one stable path for each user, bundle, and target.
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

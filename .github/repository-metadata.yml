@@ -1,0 +1,18 @@
+# GitHub does not apply this file automatically. Maintainers use it as the
+# source of truth for the repository About section and social preview.
+name: databricks-workflow-monitoring-dashboards
+description: >-
+  Open-source Databricks Workflow Monitoring Dashboards for Lakeflow Jobs SLA
+  monitoring, reliability trends, and estimated cost using AI/BI dashboards
+  and Declarative Automation Bundles (Asset Bundles).
+homepage: ""
+topics:
+  - ai-bi-dashboard
+  - databricks
+  - databricks-asset-bundles
+  - finops
+  - job-monitoring
+  - lakeflow-jobs
+  - sla-monitoring
+  - workflow-monitoring
+social_preview: docs/images/repository-open-graph-github.png

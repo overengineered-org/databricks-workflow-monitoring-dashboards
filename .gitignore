@@ -1,0 +1,8 @@
+# Local Python environments and tool caches are never repository inputs.
+.venv/
+__pycache__/
+.ruff_cache/
+.databricks/
+
+# This checkout's live configuration is generated from the tracked template.
+workflow-monitoring.yml
