@@ -1,6 +1,8 @@
 # Databricks Workflow Monitoring Dashboards
 
-An open-source Databricks jobs monitoring dashboard for [Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor), previously called Databricks Workflows. Track workflow SLA compliance, failures, reliability trends, run duration, and estimated Databricks list cost from system tables.
+## Overview
+
+An open-source, config-based dashboard for monitoring the [Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor) that deliver your data. Define each job's expected completion time in YAML, then see which jobs met or missed their dashboard-defined SLA.
 
 Choose the jobs your team cares about in one YAML file. A small Python module validates the configuration and generates a Databricks AI/BI dashboard. A [Declarative Automation Bundle](https://docs.databricks.com/aws/en/dev-tools/bundles/), formerly called a Databricks Asset Bundle, deploys it across environments.
 
@@ -8,39 +10,10 @@ Choose the jobs your team cares about in one YAML file. A small Python module va
 workflow-monitoring.yml -> Python validator and generator -> .lvdash.json -> Databricks bundle
 ```
 
-The project is read-only. It creates no tables, pipelines, catalogs, or schemas.
+Monitoring queries are read-only. Bundle deployment publishes or updates the dashboard and permissions. The optional demo bundle creates a disposable example job.
 
-## Disposable demo jobs
-
-[`examples/fast-logistics`](examples/fast-logistics/README.md) is a standalone, paused-by-default job bundle for reproducing dashboard shapes without storing workspace or user information. Deploy it only when needed and destroy it afterwards.
-
-It helps data teams:
-
-- monitor selected Databricks jobs instead of every job in the workspace;
-- track daily, weekly, fortnightly, and monthly workflow SLAs;
-- investigate successful runs, failures, missed deadlines, and run duration;
-- analyse 30-day Databricks job cost using system billing tables;
-- deploy the same dashboard configuration across environments.
-
-## See the dashboard
-
-### Databricks jobs monitoring overview
-
-![Databricks jobs monitoring dashboard showing SLA KPIs, successful and failed runs, compliance trend, and workflow health](docs/images/dashboard-operations-overview.png)
-
-See current SLA compliance, today's terminal run outcomes, workflows needing attention, and workflow health at a glance.
-
-### Lakeflow Jobs SLA monitoring
-
-![Lakeflow Jobs SLA delivery calendar and workflow reliability visualizations](docs/images/dashboard-sla-visualizations.png)
-
-Review deadline status, delivery margin, and workflow reliability risk with custom Vega-Lite visualizations.
-
-### Workflow trends and estimated Databricks cost
-
-![Databricks workflow reliability trends, run outcomes, duration, and estimated list cost](docs/images/dashboard-trends-cost.png)
-
-Filter 30-day run outcomes, success rate, duration, and estimated Databricks list cost by workflow and compute type.
+> [!NOTE]
+> System tables are not real time. This dashboard supports operational reporting, not immediate alerting. Cost is estimated Databricks list cost and excludes negotiated discounts and classic cloud-provider VM charges.
 
 ## Motivation
 
@@ -50,7 +23,7 @@ Downstream teams need to know whether the workflows that prepare their data are 
 
 This repository turns that recurring need into a reusable Lakeflow Jobs operations dashboard. Each team chooses the workflows that matter, defines their expected completion times, and gets one shared view of job health, SLA performance, failure trends, and estimated Databricks cost.
 
-The current SLA measures successful workflow completion. It does not prove that every downstream table or data product is ready. Databricks system tables are also not real time, so this dashboard supports operational visibility and reporting rather than immediate alerting.
+The current SLA measures successful workflow completion. It does not prove that every downstream table or data product is ready.
 
 ## What you need
 
@@ -78,7 +51,7 @@ You normally edit only one file:
 
 Bundle targets and variables live in `databricks.yml`. Python dependencies are locked in `pyproject.toml` and `uv.lock`.
 
-## Adapt it in four steps
+## Adapt it to your workflows
 
 ### 1. Choose your Databricks profile
 
@@ -225,9 +198,41 @@ Zero active workflows is valid. The generated dashboard returns empty results in
 > [!WARNING]
 > Databricks system tables are not real time. A newly created or renamed workflow and its runs may temporarily appear as `Missing job ID`, with zero run and SLA metrics. Wait for system-table ingestion and refresh the dashboard before treating this as a configuration error.
 
-## Databricks job monitoring, SLA, and cost views
+## Optional disposable demo
 
-### Operations
+[`examples/fast-logistics`](examples/fast-logistics/README.md) is a standalone, paused-by-default job bundle for reproducing dashboard shapes without storing workspace or user information. Deploy it only when needed and destroy it afterwards.
+
+It helps data teams:
+
+- monitor selected Databricks jobs instead of every job in the workspace;
+- track daily, weekly, fortnightly, and monthly workflow SLAs;
+- investigate successful runs, failures, missed deadlines, and run duration;
+- analyse 30-day Databricks job cost using system billing tables;
+- deploy the same dashboard configuration across environments.
+
+## Dashboard views
+
+### Operations overview
+
+![Databricks jobs monitoring dashboard showing SLA KPIs, successful and failed runs, compliance trend, and workflow health](docs/images/dashboard-operations-overview.png)
+
+See current SLA compliance, today's terminal run outcomes, workflows needing attention, and workflow health at a glance.
+
+### Dashboard-defined SLA monitoring
+
+![Lakeflow Jobs SLA delivery calendar and workflow reliability visualizations](docs/images/dashboard-sla-visualizations.png)
+
+Review deadline status, delivery margin, and workflow reliability risk with custom Vega-Lite visualizations.
+
+### Workflow trends and estimated cost
+
+![Databricks workflow reliability trends, run outcomes, duration, and estimated list cost](docs/images/dashboard-trends-cost.png)
+
+Filter 30-day run outcomes, success rate, duration, and estimated Databricks list cost by workflow and compute type.
+
+## Dashboard reference
+
+### Operations page
 
 The first page answers three questions: are workflows delivering on time, what failed today, and what needs attention?
 
@@ -259,7 +264,7 @@ The dashboard uses the same colour for each status everywhere:
 
 Every visual also shows a text label. Colour is not the only way to understand a status.
 
-### Trends & Cost
+### Trends and cost page
 
 The second page defaults to the last 30 days and contains:
 
@@ -298,7 +303,7 @@ Their readable source files live in `src/visualizations/`. The generator seriali
 
 A late completion does not rewrite a historical missed period. The next deadline starts a new period.
 
-Databricks system tables update during the day and are not real time. See [Databricks system tables](https://docs.databricks.com/aws/en/admin/system-tables).
+For system-table freshness and ingestion behaviour, see [Databricks system tables](https://docs.databricks.com/aws/en/admin/system-tables).
 
 ## Bundle variables
 
@@ -327,7 +332,7 @@ databricks bundle deploy -t <dev-or-prod> --profile <name> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-## What live validation means
+## Live validation
 
 `scripts/validate-sql-datasets.sh` sends each generated dataset query to the selected SQL warehouse. It also runs a read-only `SELECT` with fixed dates to test daily, weekly, fortnightly, monthly, month-end, and timezone calculations.
 
@@ -335,7 +340,7 @@ It does not create dummy tables, insert rows, or change Databricks data.
 
 When the example configuration has zero active workflows, dataset results are empty. This checks SQL parsing and referenced system-table fields. It does not prove metric results for a real workflow. Add active workflows and regenerate before validating real workflow rows.
 
-## Local validation on ARM Mac
+## Local validation
 
 GitHub-hosted pipelines are disabled. Everything runs through local `act`.
 
