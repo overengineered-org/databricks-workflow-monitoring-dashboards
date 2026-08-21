@@ -1,0 +1,10 @@
+bundle:
+  name: fast-logistics-example
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    default: true
+    mode: development

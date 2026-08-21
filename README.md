@@ -10,6 +10,10 @@ workflow-monitoring.yml -> Python validator and generator -> .lvdash.json -> Dat
 
 The project is read-only. It creates no tables, pipelines, catalogs, or schemas.
 
+## Disposable demo jobs
+
+[`examples/fast-logistics`](examples/fast-logistics/README.md) is a standalone, paused-by-default job bundle for reproducing dashboard shapes without storing workspace or user information. Deploy it only when needed and destroy it afterwards.
+
 It helps data teams:
 
 - monitor selected Databricks jobs instead of every job in the workspace;
