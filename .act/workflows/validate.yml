@@ -12,9 +12,9 @@ jobs:
       - name: Install locked Python environment
         run: uv sync --locked
       - name: Check Python formatting
-        run: uv run ruff format --check workflow_monitoring_dashboard.py tests
+        run: uv run ruff format --check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
       - name: Run Python lint checks
-        run: uv run ruff check workflow_monitoring_dashboard.py tests
+        run: uv run ruff check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
       - name: Validate configuration

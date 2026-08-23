@@ -18,7 +18,14 @@ DEFAULT_CONFIGURATION_PATH = Path("workflow-monitoring.yml")
 DEFAULT_SCHEMA_PATH = Path("schema/workflow-monitoring.schema.json")
 DEFAULT_SCAFFOLD_PATH = Path("src/dashboards/workflow-monitoring.scaffold.lvdash.json")
 DEFAULT_DASHBOARD_PATH = Path("src/dashboards/workflow-monitoring.lvdash.json")
+DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.job.yml")
 CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
+LATEST_JOBS_SOURCE_MARKER = "{{LATEST_JOBS_SOURCE}}"
+JOB_RUN_TIMELINE_SOURCE_MARKER = "{{JOB_RUN_TIMELINE_SOURCE}}"
+DEFAULT_JOBS_API_CATALOG = "workflow_monitoring"
+DEFAULT_JOBS_API_SCHEMA = "lakeflow_jobs"
+JOBS_API_RUN_STATE_TABLE = "workflow_run_api_state"
+JOBS_API_COLLECTION_STATUS_TABLE = "workflow_api_collection_status"
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": Path("src/visualizations/sla-delivery-calendar.vega.json"),
     "{{DELIVERY_MARGIN_TIMELINE_VEGA}}": Path(
@@ -51,11 +58,22 @@ class ActiveWorkflow:
 
 
 @dataclass(frozen=True)
+class MonitoringDataSourceConfiguration:
+    """Selected workflow state source and its optional managed storage."""
+
+    source: str
+    catalog: str = ""
+    schema: str = ""
+    refresh_interval_minutes: int = 5
+
+
+@dataclass(frozen=True)
 class WorkflowMonitoringConfiguration:
     """Validated values that are safe to place in dashboard SQL."""
 
     workspace_id: str
     active_workflows: tuple[ActiveWorkflow, ...]
+    monitoring_data_source: MonitoringDataSourceConfiguration
 
 
 def load_workflow_monitoring_configuration(
@@ -71,6 +89,15 @@ def load_workflow_monitoring_configuration(
     _validate_configuration_schema(configuration_document, schema_path)
 
     workspace_id = configuration_document["workspace_id"]
+    data_source_document = configuration_document["monitoring_data_source_config"]
+    data_source_name = data_source_document["source"]
+    data_source_storage = data_source_document.get("storage", {})
+    monitoring_data_source = MonitoringDataSourceConfiguration(
+        source=data_source_name,
+        catalog=data_source_storage.get("catalog", DEFAULT_JOBS_API_CATALOG),
+        schema=data_source_storage.get("schema", DEFAULT_JOBS_API_SCHEMA),
+        refresh_interval_minutes=data_source_document.get("refresh_interval_minutes", 5),
+    )
     default_timezone = configuration_document["default_timezone"]
     _validate_iana_timezone("default_timezone", default_timezone)
 
@@ -104,6 +131,7 @@ def load_workflow_monitoring_configuration(
     return WorkflowMonitoringConfiguration(
         workspace_id=workspace_id,
         active_workflows=tuple(active_workflows),
+        monitoring_data_source=monitoring_data_source,
     )
 
 
@@ -127,11 +155,32 @@ def _validate_configuration_schema(configuration_document: Any, schema_path: Pat
     if not validation_errors:
         return
 
-    first_error = validation_errors[0]
+    first_error = _most_specific_schema_error(validation_errors[0])
     error_path = ".".join(str(path_part) for path_part in first_error.absolute_path) or "root"
     raise ValueError(
         f"workflow monitoring configuration does not match schema at {error_path}: {first_error.message}"
     )
+
+
+def _most_specific_schema_error(schema_error: Any) -> Any:
+    """Prefer the actionable nested cause produced by oneOf validation."""
+
+    nested_errors = [schema_error]
+    for child_error in schema_error.context:
+        nested_errors.extend(_flatten_schema_errors(child_error))
+    required_field_errors = [
+        nested_error for nested_error in nested_errors if nested_error.validator == "required"
+    ]
+    if required_field_errors:
+        return max(required_field_errors, key=lambda error: len(error.absolute_path))
+    return max(nested_errors, key=lambda error: len(error.absolute_path))
+
+
+def _flatten_schema_errors(schema_error: Any) -> list[Any]:
+    flattened_errors = [schema_error]
+    for child_error in schema_error.context:
+        flattened_errors.extend(_flatten_schema_errors(child_error))
+    return flattened_errors
 
 
 def _validate_iana_timezone(field_name: str, timezone_name: str) -> None:
@@ -222,6 +271,19 @@ def generate_dashboard(
     if configured_workflow_replacement_count == 0:
         raise ValueError("dashboard scaffold contains no configured workflow marker")
 
+    source_table_markers = {
+        LATEST_JOBS_SOURCE_MARKER: _render_latest_jobs_source(configuration),
+        JOB_RUN_TIMELINE_SOURCE_MARKER: _render_job_run_timeline_source(configuration),
+    }
+    for source_table_marker, source_table_name in source_table_markers.items():
+        source_replacement_count = _replace_text_marker(
+            dashboard_document,
+            source_table_marker,
+            source_table_name,
+        )
+        if source_replacement_count == 0:
+            raise ValueError(f"dashboard scaffold contains no source marker {source_table_marker}")
+
     for visualization_marker, visualization_path in CUSTOM_VISUALIZATION_FILES.items():
         visualization_replacement_count = _replace_text_marker(
             dashboard_document,
@@ -240,6 +302,117 @@ def generate_dashboard(
         indent=2,
     )
     output_path.write_text(generated_dashboard_json + "\n", encoding="utf-8")
+
+
+def generate_jobs_api_resource(
+    configuration: WorkflowMonitoringConfiguration,
+    generated_resource_path: Path,
+) -> None:
+    """Create the collector Job only for the explicitly selected Jobs API source."""
+
+    if configuration.monitoring_data_source.source == "system_tables":
+        if generated_resource_path.exists():
+            generated_resource_path.unlink()
+        return
+
+    monitored_jobs = [
+        {"job_id": workflow.job_id, "job_name": workflow.job_name}
+        for workflow in configuration.active_workflows
+    ]
+    generated_job_resource_document = {
+        "resources": {
+            "jobs": {
+                "workflow_monitoring_jobs_api_collector": {
+                    "name": "${var.dashboard_display_name} Jobs API collector",
+                    "description": (
+                        "Polls configured Lakeflow Jobs into managed Delta tables, then "
+                        "refreshes the monitoring dashboard."
+                    ),
+                    "max_concurrent_runs": 1,
+                    "queue": {"enabled": False},
+                    "schedule": {
+                        "quartz_cron_expression": (
+                            f"0 0/{configuration.monitoring_data_source.refresh_interval_minutes} "
+                            "* * * ?"
+                        ),
+                        "timezone_id": "UTC",
+                        "pause_status": "UNPAUSED",
+                    },
+                    "parameters": [
+                        {
+                            "name": "catalog_name",
+                            "default": configuration.monitoring_data_source.catalog,
+                        },
+                        {
+                            "name": "schema_name",
+                            "default": configuration.monitoring_data_source.schema,
+                        },
+                        {"name": "workspace_id", "default": configuration.workspace_id},
+                        {
+                            "name": "monitored_jobs_json",
+                            "default": json.dumps(monitored_jobs, separators=(",", ":")),
+                        },
+                    ],
+                    "tasks": [
+                        {
+                            "task_key": "collect_jobs_api_state",
+                            "notebook_task": {
+                                "notebook_path": "../src/collect_workflow_monitoring_jobs_api.py"
+                            },
+                            "timeout_seconds": 240,
+                            "max_retries": 2,
+                            "min_retry_interval_millis": 30000,
+                        },
+                        {
+                            "task_key": "refresh_workflow_monitoring_dashboard",
+                            "depends_on": [{"task_key": "collect_jobs_api_state"}],
+                            "run_if": "ALL_DONE",
+                            "dashboard_task": {
+                                "dashboard_id": "${resources.dashboards.workflow_monitoring.id}",
+                                "warehouse_id": "${var.warehouse_id}",
+                            },
+                        },
+                    ],
+                }
+            }
+        }
+    }
+    generated_resource_path.parent.mkdir(parents=True, exist_ok=True)
+    generated_resource_path.write_text(
+        "# Generated by workflow_monitoring_dashboard.py. Do not edit.\n"
+        + yaml.safe_dump(generated_job_resource_document, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def _render_latest_jobs_source(configuration: WorkflowMonitoringConfiguration) -> str:
+    if configuration.monitoring_data_source.source == "system_tables":
+        return " ".join(
+            (
+                "(SELECT workspace_id, job_id, name, delete_time, change_time,",
+                "CAST(NULL AS STRING) AS collection_state,",
+                "CAST(NULL AS TIMESTAMP) AS last_successful_collection_time",
+                "FROM system.lakeflow.jobs) AS monitoring_jobs_source",
+            )
+        )
+    return _qualified_jobs_api_table(
+        configuration,
+        JOBS_API_COLLECTION_STATUS_TABLE,
+    )
+
+
+def _render_job_run_timeline_source(configuration: WorkflowMonitoringConfiguration) -> str:
+    if configuration.monitoring_data_source.source == "system_tables":
+        return "system.lakeflow.job_run_timeline"
+    return _qualified_jobs_api_table(configuration, JOBS_API_RUN_STATE_TABLE)
+
+
+def _qualified_jobs_api_table(
+    configuration: WorkflowMonitoringConfiguration,
+    table_name: str,
+) -> str:
+    monitoring_data_source = configuration.monitoring_data_source
+    return f"`{monitoring_data_source.catalog}`.`{monitoring_data_source.schema}`.`{table_name}`"
 
 
 def _render_configured_workflows_sql(configuration: WorkflowMonitoringConfiguration) -> str:
@@ -367,6 +540,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA_PATH)
     generate_parser.add_argument("--scaffold", type=Path, default=DEFAULT_SCAFFOLD_PATH)
     generate_parser.add_argument("--output", type=Path, default=DEFAULT_DASHBOARD_PATH)
+    generate_parser.add_argument(
+        "--jobs-api-resource-output",
+        type=Path,
+        default=DEFAULT_JOBS_API_RESOURCE_PATH,
+    )
     return parser
 
 
@@ -387,6 +565,10 @@ def main(command_arguments: list[str] | None = None) -> int:
             configuration,
             parsed_arguments.scaffold,
             parsed_arguments.output,
+        )
+        generate_jobs_api_resource(
+            configuration,
+            parsed_arguments.jobs_api_resource_output,
         )
         print(
             f"generated dashboard: {parsed_arguments.output} "

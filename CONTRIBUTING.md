@@ -41,10 +41,11 @@ Use `feat/`, `fix/`, `docs/`, or `chore/` followed by a short purpose.
 | --- | --- |
 | Public YAML format | `schema/workflow-monitoring.schema.json` |
 | Validation or generation | `workflow_monitoring_dashboard.py` |
+| Jobs API collection | `src/collect_workflow_monitoring_jobs_api.py` |
 | Dashboard SQL or layout | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Custom Vega-Lite chart | `src/visualizations/*.vega.json` |
 | Generated dashboard | `src/dashboards/workflow-monitoring.lvdash.json` |
-| Bundle deployment | `databricks.yml` or `resources/` |
+| Bundle deployment | `databricks.yml` or tracked files in `resources/` |
 | User instructions | `README.md` |
 
 Do not edit the generated `.lvdash.json` directly. Change the scaffold, then regenerate it with the public template:
@@ -54,15 +55,17 @@ uv run python workflow_monitoring_dashboard.py generate \
   --config workflow-monitoring.template.yml
 ```
 
-The public template must contain fake values. Local `workflow-monitoring.yml` and `.databricks/` files are ignored and must stay out of contributions.
+The public template must contain fake values. Local `workflow-monitoring.yml`, `.databricks/`, and the generated Jobs API resource are ignored and must stay out of contributions.
+
+Test both `monitoring_data_source_config` paths. `system_tables` must not leave a collector Job resource. `jobs_api` must require active job IDs and generate the five-minute collector resource.
 
 ## Validate your change
 
 Run the fast checks first:
 
 ```sh
-uv run ruff format --check workflow_monitoring_dashboard.py tests
-uv run ruff check workflow_monitoring_dashboard.py tests
+uv run ruff format --check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
+uv run ruff check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
 uv run python -m unittest discover -s tests -v
 uv run python workflow_monitoring_dashboard.py validate \
   --config workflow-monitoring.template.yml

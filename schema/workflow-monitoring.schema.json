@@ -5,11 +5,14 @@
   "title": "Databricks workflow monitoring configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "workspace_id", "default_timezone", "workflows"],
+  "required": ["version", "monitoring_data_source_config", "workspace_id", "default_timezone", "workflows"],
   "properties": {
-    "version": {
-      "const": 1,
-      "description": "Configuration format version."
+    "version": { "const": 2, "description": "Configuration format version." },
+    "monitoring_data_source_config": {
+      "oneOf": [
+        { "$ref": "#/$defs/system_tables_data_source" },
+        { "$ref": "#/$defs/jobs_api_data_source" }
+      ]
     },
     "workspace_id": {
       "type": "string",
@@ -23,20 +26,96 @@
     },
     "workflows": {
       "type": "array",
-      "description": "Only entries marked active are generated into dashboard SQL.",
-      "items": {
-        "oneOf": [
-          { "$ref": "#/$defs/active_workflow" },
-          { "$ref": "#/$defs/inactive_workflow" }
-        ]
-      }
+      "description": "Only entries marked active are generated into dashboard SQL."
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "monitoring_data_source_config": {
+            "properties": { "source": { "const": "jobs_api" } },
+            "required": ["source"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "workflows": {
+            "items": {
+              "oneOf": [
+                { "$ref": "#/$defs/jobs_api_active_workflow" },
+                { "$ref": "#/$defs/inactive_workflow" }
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "workflows": {
+            "items": {
+              "oneOf": [
+                { "$ref": "#/$defs/system_tables_active_workflow" },
+                { "$ref": "#/$defs/inactive_workflow" }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
-    "active_workflow": {
+    "system_tables_data_source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["job_name", "monitoring_status", "sla"],
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "const": "system_tables",
+          "description": "Read Lakeflow system tables without creating collector resources."
+        }
+      }
+    },
+    "jobs_api_data_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "const": "jobs_api",
+          "description": "Poll the Jobs API into managed Delta tables before refreshing the dashboard."
+        },
+        "refresh_interval_minutes": {
+          "const": 5,
+          "default": 5,
+          "description": "Collector interval. Version 2 supports five-minute polling."
+        },
+        "storage": { "$ref": "#/$defs/jobs_api_storage" }
+      }
+    },
+    "jobs_api_storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalog", "schema"],
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/unity_catalog_identifier",
+          "description": "Unity Catalog catalog for collector tables."
+        },
+        "schema": {
+          "$ref": "#/$defs/unity_catalog_identifier",
+          "description": "Unity Catalog schema for collector tables."
+        }
+      }
+    },
+    "unity_catalog_identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$",
+      "description": "Catalog or schema name without dots or quoting characters."
+    },
+    "workflow_fields": {
+      "type": "object",
       "properties": {
         "job_name": {
           "type": "string",
@@ -46,7 +125,7 @@
         "job_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "Optional stable Databricks job ID."
+          "description": "Stable Databricks job ID. Required by the Jobs API source."
         },
         "monitoring_status": {
           "const": "active",
@@ -56,6 +135,28 @@
           "$ref": "#/$defs/sla",
           "description": "Expected completion schedule for this workflow."
         }
+      }
+    },
+    "system_tables_active_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_name", "monitoring_status", "sla"],
+      "properties": {
+        "job_name": { "$ref": "#/$defs/workflow_fields/properties/job_name" },
+        "job_id": { "$ref": "#/$defs/workflow_fields/properties/job_id" },
+        "monitoring_status": { "$ref": "#/$defs/workflow_fields/properties/monitoring_status" },
+        "sla": { "$ref": "#/$defs/workflow_fields/properties/sla" }
+      }
+    },
+    "jobs_api_active_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_name", "job_id", "monitoring_status", "sla"],
+      "properties": {
+        "job_name": { "$ref": "#/$defs/workflow_fields/properties/job_name" },
+        "job_id": { "$ref": "#/$defs/workflow_fields/properties/job_id" },
+        "monitoring_status": { "$ref": "#/$defs/workflow_fields/properties/monitoring_status" },
+        "sla": { "$ref": "#/$defs/workflow_fields/properties/sla" }
       }
     },
     "inactive_workflow": {

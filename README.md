@@ -4,16 +4,16 @@
 
 An open-source, config-based dashboard for monitoring the [Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor) that deliver your data. Define each job's expected completion time in YAML, then see which jobs met or missed their dashboard-defined SLA.
 
-Choose the jobs your team cares about in one YAML file. A small Python module validates the configuration and generates a Databricks AI/BI dashboard. A [Declarative Automation Bundle](https://docs.databricks.com/aws/en/dev-tools/bundles/), formerly called a Databricks Asset Bundle, deploys it across environments.
+Choose the jobs and monitoring source in one YAML file. A small Python module validates the configuration and generates a Databricks AI/BI dashboard. A [Declarative Automation Bundle](https://docs.databricks.com/aws/en/dev-tools/bundles/), formerly called a Databricks Asset Bundle, deploys it across environments.
 
 ```text
-workflow-monitoring.yml -> Python validator and generator -> .lvdash.json -> Databricks bundle
+workflow-monitoring.yml -> validator and generator -> dashboard plus optional collector Job
 ```
 
-Monitoring queries are read-only. Bundle deployment publishes or updates the dashboard and permissions. The optional demo bundle creates a disposable example job.
+`system_tables` uses read-only monitoring queries. `jobs_api` polls current Jobs API state into two managed Delta tables, then refreshes the dashboard. The optional demo bundle creates disposable example jobs.
 
 > [!NOTE]
-> System tables are not real time. This dashboard supports operational reporting, not immediate alerting. Cost is estimated Databricks list cost and excludes negotiated discounts and classic cloud-provider VM charges.
+> `jobs_api` targets five-minute freshness, not real-time alerting. Scheduled jobs can still start several minutes late. Cost always uses delayed billing system tables and is estimated Databricks list cost. It excludes negotiated discounts and classic cloud-provider VM charges.
 
 ## Motivation
 
@@ -45,6 +45,7 @@ You normally edit only one file:
 | `workflow-monitoring.template.yml` | Copy this tracked template before adding real values. |
 | `schema/workflow-monitoring.schema.json` | Do not edit unless the public configuration format changes. |
 | `workflow_monitoring_dashboard.py` | Edit only when changing validation or generation behavior. |
+| `src/collect_workflow_monitoring_jobs_api.py` | Edit only when changing Jobs API collection behavior. |
 | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` | Edit only when changing dashboard SQL or layout. |
 | `src/visualizations/*.vega.json` | Edit only when changing a custom chart. |
 | `src/dashboards/workflow-monitoring.lvdash.json` | Never edit directly. The Python generator replaces it. |
@@ -83,7 +84,7 @@ databricks experimental aitools tools get-default-warehouse \
 
 Put the workspace ID in `workflow-monitoring.yml`. Keep the warehouse ID outside Git and pass it with `--var` when validating or deploying.
 
-### 3. Add the workflows you care about
+### 3. Choose monitoring freshness
 
 Create your ignored local configuration:
 
@@ -91,12 +92,45 @@ Create your ignored local configuration:
 cp workflow-monitoring.template.yml workflow-monitoring.yml
 ```
 
-Then replace the inactive example in `workflow-monitoring.yml`:
+Keep the read-only source when system-table delay is acceptable:
+
+```yaml
+monitoring_data_source_config:
+  source: system_tables
+```
+
+Use the Jobs API source for five-minute operational status:
+
+```yaml
+monitoring_data_source_config:
+  source: jobs_api
+  refresh_interval_minutes: 5
+  storage:
+    catalog: workflow_monitoring
+    schema: lakeflow_jobs
+```
+
+If `storage` is omitted, the dedicated fallback is `workflow_monitoring.lakeflow_jobs`. The collector creates that catalog and schema when its run identity has permission. It never selects an unrelated existing catalog.
+
+| Source | Freshness | Creates resources | Active `job_id` |
+| --- | --- | --- | --- |
+| `system_tables` | Databricks ingestion delay | Dashboard only | optional |
+| `jobs_api` | five-minute polling target | Collector Job and two managed Delta tables | required |
+
+### 4. Add the workflows you care about
+
+Replace the inactive example in `workflow-monitoring.yml`:
 
 ```yaml
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
 
-version: 1
+version: 2
+monitoring_data_source_config:
+  source: jobs_api
+  refresh_interval_minutes: 5
+  storage:
+    catalog: workflow_monitoring
+    schema: lakeflow_jobs
 workspace_id: "1234567890123456"
 default_timezone: UTC
 
@@ -110,9 +144,9 @@ workflows:
       timezone: Australia/Melbourne
 ```
 
-`job_id` is optional. Use it when possible because it stays stable if a workflow is renamed.
+`job_id` is required for `jobs_api`. It is optional for `system_tables`, but preferred because it stays stable if a workflow is renamed.
 
-### 4. Validate and generate
+### 5. Validate and generate
 
 Run both commands from the repository root:
 
@@ -124,12 +158,14 @@ uv run --no-dev python workflow_monitoring_dashboard.py generate
 
 Your organization may commit `workflow-monitoring.yml` and the generated `.lvdash.json` to its own repository according to its security policy. Contributions to this public upstream repository must keep fake values in the example and generated dashboard.
 
+For `jobs_api`, generation also creates the ignored `resources/workflow-monitoring.jobs-api.job.yml`. Switching back to `system_tables` removes that generated collector resource.
+
 ## Workflow fields
 
 | Field | Required for active workflow | Meaning |
 | --- | --- | --- |
 | `job_name` | yes | Exact Lakeflow job name shown in Databricks. |
-| `job_id` | no | Stable numeric Databricks job ID. Preferred when known. |
+| `job_id` | source-dependent | Required by `jobs_api`. Optional but preferred for `system_tables`. |
 | `monitoring_status` | yes | `active` includes it. `inactive` excludes it. |
 | `sla.frequency` | yes | `daily`, `weekly`, `fortnightly`, or `monthly`. |
 | `sla.completion_time` | yes | Expected completion time in `HH:MM` format. |
@@ -189,14 +225,14 @@ Zero active workflows is valid. The generated dashboard returns empty results in
 
 ## How workflow resolution works
 
-1. When `job_id` exists, the dashboard resolves by ID.
-2. Without `job_id`, it searches for an exact `job_name`.
+1. `jobs_api` resolves every active workflow by required `job_id`.
+2. `system_tables` resolves by ID when present, otherwise exact `job_name`.
 3. Missing IDs, missing names, duplicate name matches, and ID/name mismatches appear in Configuration problems.
 4. Unresolved workflows are excluded from run, SLA, and cost metrics.
 5. Every active YAML entry still appears in Workflow health.
 
 > [!WARNING]
-> Databricks system tables are not real time. A newly created or renamed workflow and its runs may temporarily appear as `Missing job ID`, with zero run and SLA metrics. Wait for system-table ingestion and refresh the dashboard before treating this as a configuration error.
+> With `system_tables`, a new or renamed workflow can temporarily appear as `Missing job ID`. Wait for ingestion and refresh before treating it as a configuration error. With `jobs_api`, check `workflow_api_collection_status` for collection failures.
 
 ## Optional disposable demo
 
@@ -303,7 +339,18 @@ Their readable source files live in `src/visualizations/`. The generator seriali
 
 A late completion does not rewrite a historical missed period. The next deadline starts a new period.
 
-For system-table freshness and ingestion behaviour, see [Databricks system tables](https://docs.databricks.com/aws/en/admin/system-tables).
+For system-table freshness and ingestion behaviour, see [Databricks system tables](https://docs.databricks.com/aws/en/admin/system-tables). Jobs API run records are available for 60 days. Continued polling preserves collected records beyond that initial API window.
+
+## Jobs API managed tables
+
+The `jobs_api` collector owns two tables in the configured Unity Catalog location:
+
+| Table | One row per | Purpose |
+| --- | --- | --- |
+| `workflow_run_api_state` | workspace, job, run | Latest observed run state, timestamps, trigger, and run URL. |
+| `workflow_api_collection_status` | workspace, job | Latest collection result, job name, success time, and sanitized error. |
+
+The Workflow health table shows `Jobs API collection failed` or `Jobs API data stale` when collection is unhealthy. The collector uses Delta `MERGE`, so retries and overlapping polls do not duplicate a run. It stores only fields needed by the dashboard. It does not store job parameters, creator identities, notebook output, or raw API payloads.
 
 ## Bundle variables
 
@@ -313,7 +360,14 @@ For system-table freshness and ingestion behaviour, see [Databricks system table
 | `dashboard_display_name` | no | `Databricks Workflow Monitoring Dashboard` |
 | `dashboard_viewer_group` | no | `users` |
 
-The bundle uses embedded credentials and gives `CAN_READ` to the configured viewer group. The deployment identity must already be able to use the warehouse and read the required system tables.
+The dashboard uses embedded credentials and gives `CAN_READ` to the configured viewer group. The deployment identity must already be able to use the warehouse and read the required system tables.
+
+For `jobs_api`, the collector Job runs as the bundle deployer unless the adopter adds bundle `run_as`. A user identity is suitable for a pilot. Production should use a service principal with only these permissions:
+
+1. Read the configured Jobs and their runs.
+2. Create or use the configured catalog and schema.
+3. Create, read, and modify the two collector tables.
+4. Refresh and use the dashboard warehouse.
 
 Validate both targets before deployment:
 
@@ -338,7 +392,7 @@ databricks bundle deploy -t <dev-or-prod> --profile <name> \
 
 It does not create dummy tables, insert rows, or change Databricks data.
 
-When the example configuration has zero active workflows, dataset results are empty. This checks SQL parsing and referenced system-table fields. It does not prove metric results for a real workflow. Add active workflows and regenerate before validating real workflow rows.
+When the example configuration has zero active workflows, dataset results are empty. This checks SQL parsing and referenced fields. It does not prove metric results for a real workflow. Add active workflows and regenerate before validating real workflow rows.
 
 ## Local validation
 
@@ -384,6 +438,9 @@ The OAuth token cache is writable because the CLI may refresh credentials. Crede
 | --- | --- |
 | `job_name duplicates active workflow` | Keep only one active entry for that name. |
 | `job_id duplicates active workflow` | Keep only one active entry for that ID. |
+| `'job_id' is a required property` | Add every active job ID when `source: jobs_api`. |
+| Jobs API collector cannot create storage | Grant its run identity catalog and schema privileges, or configure existing governed storage. |
+| Jobs API collection failed | Read the sanitized error in `workflow_api_collection_status`. |
 | `does not match schema` | Use editor hints or check the schedule fields above. |
 | `not an IANA timezone` | Use a name such as `UTC` or `Australia/Melbourne`. |
 | Configuration problem in dashboard | Check the job ID, exact name, and workspace ID. |

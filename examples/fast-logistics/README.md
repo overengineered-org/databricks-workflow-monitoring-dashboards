@@ -24,4 +24,4 @@ When finished, remove the disposable resources:
 databricks bundle destroy --auto-approve --profile <profile>
 ```
 
-To monitor these jobs with this repository, copy `workflow-monitoring.template.yml`, add the job names and IDs returned by your own deployment, then validate and generate the dashboard from the repository root.
+To monitor these jobs, copy `workflow-monitoring.template.yml`, choose `system_tables` or `jobs_api`, then add the job names and IDs returned by your deployment. `jobs_api` requires every active job ID. Validate and generate from the repository root.
