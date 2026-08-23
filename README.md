@@ -104,7 +104,6 @@ Use the Jobs API source for five-minute operational status:
 ```yaml
 monitoring_data_source_config:
   source: jobs_api
-  refresh_interval_minutes: 5
   storage:
     catalog: workflow_monitoring
     schema: lakeflow_jobs
@@ -127,7 +126,6 @@ Replace the inactive example in `workflow-monitoring.yml`:
 version: 2
 monitoring_data_source_config:
   source: jobs_api
-  refresh_interval_minutes: 5
   storage:
     catalog: workflow_monitoring
     schema: lakeflow_jobs
@@ -144,7 +142,7 @@ workflows:
       timezone: Australia/Melbourne
 ```
 
-`job_id` is required for `jobs_api`. It is optional for `system_tables`, but preferred because it stays stable if a workflow is renamed.
+`job_id` is required for `jobs_api`. In that mode, `job_name` is the dashboard label and is not checked through the API. For `system_tables`, `job_id` is optional but preferred because it stays stable if a workflow is renamed.
 
 ### 5. Validate and generate
 
@@ -347,8 +345,8 @@ The `jobs_api` collector owns two tables in the configured Unity Catalog locatio
 
 | Table | One row per | Purpose |
 | --- | --- | --- |
-| `workflow_run_api_state` | workspace, job, run | Latest observed run state, timestamps, trigger, and run URL. |
-| `workflow_api_collection_status` | workspace, job | Latest collection result, job name, success time, and sanitized error. |
+| `workflow_run_api_state` | workspace, job, run | Latest observed run state and timestamps. |
+| `workflow_api_collection_status` | workspace, job | Latest attempt, success time, and sanitized error. |
 
 The Workflow health table shows `Jobs API collection failed` or `Jobs API data stale` when collection is unhealthy. The collector uses Delta `MERGE`, so retries and overlapping polls do not duplicate a run. It stores only fields needed by the dashboard. It does not store job parameters, creator identities, notebook output, or raw API payloads.
 
@@ -438,7 +436,7 @@ The OAuth token cache is writable because the CLI may refresh credentials. Crede
 | --- | --- |
 | `job_name duplicates active workflow` | Keep only one active entry for that name. |
 | `job_id duplicates active workflow` | Keep only one active entry for that ID. |
-| `'job_id' is a required property` | Add every active job ID when `source: jobs_api`. |
+| `job_id is required for jobs_api` | Add every active job ID when `source: jobs_api`. |
 | Jobs API collector cannot create storage | Grant its run identity catalog and schema privileges, or configure existing governed storage. |
 | Jobs API collection failed | Read the sanitized error in `workflow_api_collection_status`. |
 | `does not match schema` | Use editor hints or check the schedule fields above. |

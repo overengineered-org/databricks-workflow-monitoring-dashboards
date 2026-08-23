@@ -26,45 +26,15 @@
     },
     "workflows": {
       "type": "array",
-      "description": "Only entries marked active are generated into dashboard SQL."
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "monitoring_data_source_config": {
-            "properties": { "source": { "const": "jobs_api" } },
-            "required": ["source"]
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "workflows": {
-            "items": {
-              "oneOf": [
-                { "$ref": "#/$defs/jobs_api_active_workflow" },
-                { "$ref": "#/$defs/inactive_workflow" }
-              ]
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "workflows": {
-            "items": {
-              "oneOf": [
-                { "$ref": "#/$defs/system_tables_active_workflow" },
-                { "$ref": "#/$defs/inactive_workflow" }
-              ]
-            }
-          }
-        }
+      "description": "Only entries marked active are generated into dashboard SQL.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/active_workflow" },
+          { "$ref": "#/$defs/inactive_workflow" }
+        ]
       }
     }
-  ],
+  },
   "$defs": {
     "system_tables_data_source": {
       "type": "object",
@@ -85,11 +55,6 @@
         "source": {
           "const": "jobs_api",
           "description": "Poll the Jobs API into managed Delta tables before refreshing the dashboard."
-        },
-        "refresh_interval_minutes": {
-          "const": 5,
-          "default": 5,
-          "description": "Collector interval. Version 2 supports five-minute polling."
         },
         "storage": { "$ref": "#/$defs/jobs_api_storage" }
       }
@@ -114,13 +79,15 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$",
       "description": "Catalog or schema name without dots or quoting characters."
     },
-    "workflow_fields": {
+    "active_workflow": {
       "type": "object",
+      "additionalProperties": false,
+      "required": ["job_name", "monitoring_status", "sla"],
       "properties": {
         "job_name": {
           "type": "string",
           "minLength": 1,
-          "description": "Exact Lakeflow job name shown in Databricks."
+          "description": "Dashboard label. Must exactly match Databricks only when system_tables resolves without job_id."
         },
         "job_id": {
           "type": "integer",
@@ -135,28 +102,6 @@
           "$ref": "#/$defs/sla",
           "description": "Expected completion schedule for this workflow."
         }
-      }
-    },
-    "system_tables_active_workflow": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["job_name", "monitoring_status", "sla"],
-      "properties": {
-        "job_name": { "$ref": "#/$defs/workflow_fields/properties/job_name" },
-        "job_id": { "$ref": "#/$defs/workflow_fields/properties/job_id" },
-        "monitoring_status": { "$ref": "#/$defs/workflow_fields/properties/monitoring_status" },
-        "sla": { "$ref": "#/$defs/workflow_fields/properties/sla" }
-      }
-    },
-    "jobs_api_active_workflow": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["job_name", "job_id", "monitoring_status", "sla"],
-      "properties": {
-        "job_name": { "$ref": "#/$defs/workflow_fields/properties/job_name" },
-        "job_id": { "$ref": "#/$defs/workflow_fields/properties/job_id" },
-        "monitoring_status": { "$ref": "#/$defs/workflow_fields/properties/monitoring_status" },
-        "sla": { "$ref": "#/$defs/workflow_fields/properties/sla" }
       }
     },
     "inactive_workflow": {

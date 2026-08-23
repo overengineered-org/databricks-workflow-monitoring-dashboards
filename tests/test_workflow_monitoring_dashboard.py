@@ -7,11 +7,17 @@ import re
 import tempfile
 import textwrap
 import unittest
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
 
+from src.collect_workflow_monitoring_jobs_api import (
+    _last_successful_collection_by_workspace_and_job,
+    _normalized_run_state,
+)
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
     ActiveWorkflow,
@@ -218,7 +224,7 @@ class ConfigurationTests(unittest.TestCase):
                     sla: {frequency: daily, completion_time: "06:00"}
                 """,
                 None,
-                "job_id.*required property",
+                "job_id is required for jobs_api",
             ),
             (
                 "Jobs API uses dedicated storage fallback",
@@ -226,7 +232,6 @@ class ConfigurationTests(unittest.TestCase):
                 version: 2
                 monitoring_data_source_config:
                   source: jobs_api
-                  refresh_interval_minutes: 5
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -315,7 +320,7 @@ class DashboardGenerationTests(unittest.TestCase):
                                     "queryLines": [
                                         "WITH configured_workflows AS (\n",
                                         "{{CONFIGURED_WORKFLOWS}}\n",
-                                        ") SELECT * FROM {{LATEST_JOBS_SOURCE}} j "
+                                        ") {{WORKFLOW_RESOLUTION}} "
                                         "JOIN {{JOB_RUN_TIMELINE_SOURCE}} r ON true",
                                     ]
                                 }
@@ -355,6 +360,25 @@ class DashboardGenerationTests(unittest.TestCase):
                     scaffold_path,
                     temporary_path / "dashboard.json",
                 )
+
+    def test_system_tables_filters_deleted_jobs_after_latest_version(self) -> None:
+        configuration = WorkflowMonitoringConfiguration(
+            workspace_id="123456789",
+            active_workflows=(),
+            monitoring_data_source=SYSTEM_TABLES_SOURCE,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dashboard_path = Path(temporary_directory) / "dashboard.json"
+            generate_dashboard(configuration, SCAFFOLD_PATH, dashboard_path)
+            generated_dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+
+        for dataset in generated_dashboard["datasets"]:
+            dataset_sql = "".join(dataset["queryLines"])
+            latest_version_position = dataset_sql.index(
+                "QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id"
+            )
+            deletion_filter_position = dataset_sql.index("WHERE delete_time IS NULL")
+            self.assertLess(latest_version_position, deletion_filter_position)
 
     def test_generation_injects_valid_custom_visualizations(self) -> None:
         configuration = WorkflowMonitoringConfiguration(
@@ -453,12 +477,20 @@ class DashboardGenerationTests(unittest.TestCase):
                 "`monitoring_catalog`.`monitoring_schema`.`workflow_api_collection_status`",
                 dashboard_text,
             )
+            self.assertIn("Jobs API collection failed", dashboard_text)
+            self.assertIn("Jobs API data stale", dashboard_text)
+            self.assertIn("c.configured_job_id AS resolved_job_id", dashboard_text)
             resource_document = yaml.safe_load(resource_path.read_text(encoding="utf-8"))
             collector_job = resource_document["resources"]["jobs"][
                 "workflow_monitoring_jobs_api_collector"
             ]
             self.assertEqual(collector_job["schedule"]["quartz_cron_expression"], "0 0/5 * * * ?")
             self.assertEqual(collector_job["max_concurrent_runs"], 1)
+            self.assertNotIn("queue", collector_job)
+            collector_parameters = {
+                parameter["name"]: parameter["default"] for parameter in collector_job["parameters"]
+            }
+            self.assertEqual(collector_parameters["monitored_job_ids_json"], "[42]")
             self.assertEqual(collector_job["tasks"][1]["run_if"], "ALL_DONE")
             self.assertEqual(
                 collector_job["tasks"][1]["dashboard_task"]["dashboard_id"],
@@ -493,6 +525,7 @@ class DashboardScaffoldTests(unittest.TestCase):
         for dataset in scaffold["datasets"]:
             dataset_sql = "".join(dataset["queryLines"])
             self.assertEqual(dataset_sql.count("{{CONFIGURED_WORKFLOWS}}"), 1)
+            self.assertEqual(dataset_sql.count("{{WORKFLOW_RESOLUTION}}"), 1)
 
         expected_page_names = {"operations", "trends-cost"}
         self.assertEqual({page["name"] for page in scaffold["pages"]}, expected_page_names)
@@ -551,8 +584,6 @@ class DashboardScaffoldTests(unittest.TestCase):
             "late_recoveries AS",
             "run_metrics_30d AS",
             "estimated_list_cost_30d",
-            "Jobs API collection failed",
-            "Jobs API data stale",
         )
         for required_sql_fragment in required_sql_fragments:
             self.assertIn(required_sql_fragment, scaffold_text)
@@ -629,6 +660,10 @@ class JobsApiCollectorTests(unittest.TestCase):
             'COLLECTION_STATUS_TABLE_NAME = "workflow_api_collection_status"',
             "active_only=True",
             "INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15",
+            "CREATE CATALOG IF NOT EXISTS",
+            "CREATE SCHEMA IF NOT EXISTS",
+            ".where(f\"workspace_id = '{workspace_id}'\")",
+            "(workspace_id, str(job_id))",
             ".whenMatchedUpdateAll()",
             ".whenNotMatchedInsertAll()",
         )
@@ -638,6 +673,91 @@ class JobsApiCollectorTests(unittest.TestCase):
         excluded_sensitive_fields = ("creator_user_name", "notebook_output", "job_parameters")
         for excluded_sensitive_field in excluded_sensitive_fields:
             self.assertNotIn(excluded_sensitive_field, collector_source)
+
+        removed_complexity = (
+            "SHOW CATALOGS",
+            "SHOW SCHEMAS",
+            "jobs.get(",
+            "refresh_interval_minutes",
+            "trigger_type",
+            "run_page_url",
+            "collected_at",
+            'getattr(job_run, "state"',
+        )
+        for removed_fragment in removed_complexity:
+            self.assertNotIn(removed_fragment, collector_source)
+
+    def test_current_jobs_api_status_maps_terminal_outcomes(self) -> None:
+        mapping_cases = (
+            ("RUNNING", None, "RUNNING"),
+            ("TERMINATING", "USER_CANCELED", "TERMINATING"),
+            ("TERMINATED", "SUCCESS", "SUCCEEDED"),
+            ("TERMINATED", "CANCELED", "CANCELLED"),
+            ("TERMINATED", "USER_CANCELED", "CANCELLED"),
+            ("TERMINATED", "SKIPPED", "SKIPPED"),
+            ("TERMINATED", "SUCCESS_WITH_FAILURES", "FAILED"),
+            ("TERMINATED", "RUN_EXECUTION_ERROR", "FAILED"),
+        )
+        for lifecycle_state, termination_code, expected_state in mapping_cases:
+            with self.subTest(lifecycle_state=lifecycle_state, code=termination_code):
+                termination_details = SimpleNamespace(code=termination_code)
+                job_run = SimpleNamespace(
+                    status=SimpleNamespace(
+                        state=lifecycle_state,
+                        termination_details=termination_details,
+                    )
+                )
+                self.assertEqual(_normalized_run_state(job_run), expected_state)
+
+        self.assertEqual(_normalized_run_state(SimpleNamespace(status=None)), "UNKNOWN")
+
+    def test_checkpoint_lookup_is_scoped_to_workspace_and_job(self) -> None:
+        checkpoint_time = datetime(2026, 8, 24, 1, 2, 3)
+        checkpoint_rows = [
+            SimpleNamespace(
+                workspace_id="111",
+                job_id="42",
+                last_successful_collection_at=checkpoint_time,
+            ),
+            SimpleNamespace(
+                workspace_id="222",
+                job_id="42",
+                last_successful_collection_at=checkpoint_time,
+            ),
+        ]
+
+        class CheckpointDataFrame:
+            def __init__(self, rows: list[SimpleNamespace]) -> None:
+                self.rows = rows
+
+            def select(self, *_column_names: str) -> CheckpointDataFrame:
+                return self
+
+            def where(self, predicate: str) -> CheckpointDataFrame:
+                if predicate.startswith("workspace_id ="):
+                    selected_workspace_id = predicate.split("'")[1]
+                    self.rows = [
+                        row for row in self.rows if row.workspace_id == selected_workspace_id
+                    ]
+                elif predicate == "last_successful_collection_at IS NOT NULL":
+                    self.rows = [
+                        row for row in self.rows if row.last_successful_collection_at is not None
+                    ]
+                return self
+
+            def collect(self) -> list[SimpleNamespace]:
+                return self.rows
+
+        spark_session = SimpleNamespace(
+            table=lambda _table_name: CheckpointDataFrame(checkpoint_rows.copy())
+        )
+        checkpoints = _last_successful_collection_by_workspace_and_job(
+            spark_session,
+            "monitoring",
+            "jobs",
+            "111",
+        )
+        self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
 
 
 if __name__ == "__main__":

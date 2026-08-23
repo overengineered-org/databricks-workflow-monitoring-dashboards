@@ -20,7 +20,7 @@ DEFAULT_SCAFFOLD_PATH = Path("src/dashboards/workflow-monitoring.scaffold.lvdash
 DEFAULT_DASHBOARD_PATH = Path("src/dashboards/workflow-monitoring.lvdash.json")
 DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.job.yml")
 CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
-LATEST_JOBS_SOURCE_MARKER = "{{LATEST_JOBS_SOURCE}}"
+WORKFLOW_RESOLUTION_MARKER = "{{WORKFLOW_RESOLUTION}}"
 JOB_RUN_TIMELINE_SOURCE_MARKER = "{{JOB_RUN_TIMELINE_SOURCE}}"
 DEFAULT_JOBS_API_CATALOG = "workflow_monitoring"
 DEFAULT_JOBS_API_SCHEMA = "lakeflow_jobs"
@@ -64,7 +64,6 @@ class MonitoringDataSourceConfiguration:
     source: str
     catalog: str = ""
     schema: str = ""
-    refresh_interval_minutes: int = 5
 
 
 @dataclass(frozen=True)
@@ -96,7 +95,6 @@ def load_workflow_monitoring_configuration(
         source=data_source_name,
         catalog=data_source_storage.get("catalog", DEFAULT_JOBS_API_CATALOG),
         schema=data_source_storage.get("schema", DEFAULT_JOBS_API_SCHEMA),
-        refresh_interval_minutes=data_source_document.get("refresh_interval_minutes", 5),
     )
     default_timezone = configuration_document["default_timezone"]
     _validate_iana_timezone("default_timezone", default_timezone)
@@ -110,6 +108,8 @@ def load_workflow_monitoring_configuration(
             continue
 
         active_workflow = _validate_active_workflow(workflow_document, default_timezone)
+        if data_source_name == "jobs_api" and active_workflow.job_id is None:
+            raise ValueError(f"workflows[{workflow_index}]: job_id is required for jobs_api")
         if active_workflow.job_name in active_job_name_locations:
             previous_index = active_job_name_locations[active_workflow.job_name]
             raise ValueError(
@@ -155,32 +155,16 @@ def _validate_configuration_schema(configuration_document: Any, schema_path: Pat
     if not validation_errors:
         return
 
-    first_error = _most_specific_schema_error(validation_errors[0])
+    first_error = validation_errors[0]
+    required_field_errors = [
+        nested_error for nested_error in first_error.context if nested_error.validator == "required"
+    ]
+    if required_field_errors:
+        first_error = required_field_errors[0]
     error_path = ".".join(str(path_part) for path_part in first_error.absolute_path) or "root"
     raise ValueError(
         f"workflow monitoring configuration does not match schema at {error_path}: {first_error.message}"
     )
-
-
-def _most_specific_schema_error(schema_error: Any) -> Any:
-    """Prefer the actionable nested cause produced by oneOf validation."""
-
-    nested_errors = [schema_error]
-    for child_error in schema_error.context:
-        nested_errors.extend(_flatten_schema_errors(child_error))
-    required_field_errors = [
-        nested_error for nested_error in nested_errors if nested_error.validator == "required"
-    ]
-    if required_field_errors:
-        return max(required_field_errors, key=lambda error: len(error.absolute_path))
-    return max(nested_errors, key=lambda error: len(error.absolute_path))
-
-
-def _flatten_schema_errors(schema_error: Any) -> list[Any]:
-    flattened_errors = [schema_error]
-    for child_error in schema_error.context:
-        flattened_errors.extend(_flatten_schema_errors(child_error))
-    return flattened_errors
 
 
 def _validate_iana_timezone(field_name: str, timezone_name: str) -> None:
@@ -271,18 +255,18 @@ def generate_dashboard(
     if configured_workflow_replacement_count == 0:
         raise ValueError("dashboard scaffold contains no configured workflow marker")
 
-    source_table_markers = {
-        LATEST_JOBS_SOURCE_MARKER: _render_latest_jobs_source(configuration),
+    source_markers = {
+        WORKFLOW_RESOLUTION_MARKER: _render_workflow_resolution_sql(configuration),
         JOB_RUN_TIMELINE_SOURCE_MARKER: _render_job_run_timeline_source(configuration),
     }
-    for source_table_marker, source_table_name in source_table_markers.items():
+    for source_marker, source_sql in source_markers.items():
         source_replacement_count = _replace_text_marker(
             dashboard_document,
-            source_table_marker,
-            source_table_name,
+            source_marker,
+            source_sql,
         )
         if source_replacement_count == 0:
-            raise ValueError(f"dashboard scaffold contains no source marker {source_table_marker}")
+            raise ValueError(f"dashboard scaffold contains no source marker {source_marker}")
 
     for visualization_marker, visualization_path in CUSTOM_VISUALIZATION_FILES.items():
         visualization_replacement_count = _replace_text_marker(
@@ -315,10 +299,7 @@ def generate_jobs_api_resource(
             generated_resource_path.unlink()
         return
 
-    monitored_jobs = [
-        {"job_id": workflow.job_id, "job_name": workflow.job_name}
-        for workflow in configuration.active_workflows
-    ]
+    monitored_job_ids = [workflow.job_id for workflow in configuration.active_workflows]
     generated_job_resource_document = {
         "resources": {
             "jobs": {
@@ -329,12 +310,8 @@ def generate_jobs_api_resource(
                         "refreshes the monitoring dashboard."
                     ),
                     "max_concurrent_runs": 1,
-                    "queue": {"enabled": False},
                     "schedule": {
-                        "quartz_cron_expression": (
-                            f"0 0/{configuration.monitoring_data_source.refresh_interval_minutes} "
-                            "* * * ?"
-                        ),
+                        "quartz_cron_expression": "0 0/5 * * * ?",
                         "timezone_id": "UTC",
                         "pause_status": "UNPAUSED",
                     },
@@ -349,8 +326,8 @@ def generate_jobs_api_resource(
                         },
                         {"name": "workspace_id", "default": configuration.workspace_id},
                         {
-                            "name": "monitored_jobs_json",
-                            "default": json.dumps(monitored_jobs, separators=(",", ":")),
+                            "name": "monitored_job_ids_json",
+                            "default": json.dumps(monitored_job_ids, separators=(",", ":")),
                         },
                     ],
                     "tasks": [
@@ -385,19 +362,74 @@ def generate_jobs_api_resource(
     )
 
 
-def _render_latest_jobs_source(configuration: WorkflowMonitoringConfiguration) -> str:
+def _render_workflow_resolution_sql(
+    configuration: WorkflowMonitoringConfiguration,
+) -> str:
     if configuration.monitoring_data_source.source == "system_tables":
-        return " ".join(
+        return "\n".join(
             (
-                "(SELECT workspace_id, job_id, name, delete_time, change_time,",
-                "CAST(NULL AS STRING) AS collection_state,",
-                "CAST(NULL AS TIMESTAMP) AS last_successful_collection_time",
-                "FROM system.lakeflow.jobs) AS monitoring_jobs_source",
+                "-- Resolve names or IDs from the latest live system-table record.",
+                "latest_jobs AS (",
+                "  SELECT workspace_id, job_id, name",
+                "  FROM (",
+                "    SELECT workspace_id, job_id, name, delete_time",
+                "    FROM system.lakeflow.jobs",
+                "    WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)",
+                "    QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id ORDER BY change_time DESC) = 1",
+                "  ) latest_job_versions",
+                "  WHERE delete_time IS NULL",
+                "),",
+                "name_matches AS (",
+                "  SELECT c.configured_order, COUNT(j.job_id) AS match_count, MAX(j.job_id) AS matched_job_id",
+                "  FROM configured_workflows c",
+                "  LEFT JOIN latest_jobs j ON c.workspace_id = j.workspace_id",
+                "    AND c.configured_job_id IS NULL AND c.configured_job_name = j.name",
+                "  GROUP BY c.configured_order",
+                "),",
+                "resolved_workflows AS (",
+                "  SELECT c.*,",
+                "    CASE WHEN c.configured_job_id IS NOT NULL THEN id_job.job_id",
+                "      WHEN n.match_count = 1 THEN n.matched_job_id END AS resolved_job_id,",
+                "    c.configured_job_name AS workflow_name,",
+                "    CASE",
+                "      WHEN c.configured_job_id IS NOT NULL AND id_job.job_id IS NULL THEN 'Missing job ID'",
+                "      WHEN c.configured_job_id IS NOT NULL AND id_job.name <> c.configured_job_name THEN 'Job ID and name mismatch'",
+                "      WHEN c.configured_job_id IS NULL AND n.match_count = 0 THEN 'Missing job name'",
+                "      WHEN c.configured_job_id IS NULL AND n.match_count > 1 THEN 'Ambiguous job name'",
+                "    END AS configuration_problem",
+                "  FROM configured_workflows c",
+                "  LEFT JOIN latest_jobs id_job ON c.workspace_id = id_job.workspace_id",
+                "    AND c.configured_job_id = id_job.job_id",
+                "  LEFT JOIN name_matches n ON c.configured_order = n.configured_order",
+                "),",
             )
         )
-    return _qualified_jobs_api_table(
-        configuration,
-        JOBS_API_COLLECTION_STATUS_TABLE,
+    collection_status_table = _qualified_jobs_api_table(
+        configuration, JOBS_API_COLLECTION_STATUS_TABLE
+    )
+    return "\n".join(
+        (
+            "-- Jobs API mode resolves directly from required configured IDs.",
+            "collection_checkpoints AS (",
+            "  SELECT workspace_id, job_id, last_collection_attempt_at,",
+            "    last_successful_collection_at, last_error_message",
+            f"  FROM {collection_status_table}",
+            "  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)",
+            "),",
+            "resolved_workflows AS (",
+            "  SELECT c.*, c.configured_job_id AS resolved_job_id,",
+            "    c.configured_job_name AS workflow_name,",
+            "    CASE",
+            "      WHEN checkpoint.job_id IS NULL THEN 'Jobs API collection pending'",
+            "      WHEN checkpoint.last_error_message IS NOT NULL THEN 'Jobs API collection failed'",
+            "      WHEN checkpoint.last_successful_collection_at < current_timestamp() - INTERVAL 20 MINUTES THEN 'Jobs API data stale'",
+            "    END AS configuration_problem",
+            "  FROM configured_workflows c",
+            "  LEFT JOIN collection_checkpoints checkpoint",
+            "    ON c.workspace_id = checkpoint.workspace_id",
+            "    AND c.configured_job_id = checkpoint.job_id",
+            "),",
+        )
     )
 
 

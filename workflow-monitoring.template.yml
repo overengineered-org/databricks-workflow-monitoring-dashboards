@@ -10,7 +10,6 @@ monitoring_data_source_config:
 # For five-minute Jobs API polling, replace the block above with:
 # monitoring_data_source_config:
 #   source: jobs_api
-#   refresh_interval_minutes: 5
 #   storage:
 #     catalog: workflow_monitoring
 #     schema: lakeflow_jobs
