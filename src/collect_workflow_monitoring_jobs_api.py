@@ -17,6 +17,7 @@ WORKSPACE_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 SUCCESS_TERMINATION_CODES = {"SUCCESS"}
 CANCELLED_TERMINATION_CODES = {"CANCELED", "USER_CANCELED"}
 SKIPPED_TERMINATION_CODES = {
+    "DISABLED",
     "SKIPPED",
     "MAX_CONCURRENT_RUNS_EXCEEDED",
     "MAX_JOB_QUEUE_SIZE_EXCEEDED",
@@ -107,6 +108,8 @@ def _normalized_run_state(job_run: Any) -> str:
     lifecycle_state = _enum_text(getattr(run_status, "state", None))
     if not lifecycle_state:
         return "UNKNOWN"
+    if lifecycle_state == "INTERNAL_ERROR":
+        return "FAILED"
     if lifecycle_state != "TERMINATED":
         return lifecycle_state
 

@@ -691,9 +691,11 @@ class JobsApiCollectorTests(unittest.TestCase):
         mapping_cases = (
             ("RUNNING", None, "RUNNING"),
             ("TERMINATING", "USER_CANCELED", "TERMINATING"),
+            ("INTERNAL_ERROR", None, "FAILED"),
             ("TERMINATED", "SUCCESS", "SUCCEEDED"),
             ("TERMINATED", "CANCELED", "CANCELLED"),
             ("TERMINATED", "USER_CANCELED", "CANCELLED"),
+            ("TERMINATED", "DISABLED", "SKIPPED"),
             ("TERMINATED", "SKIPPED", "SKIPPED"),
             ("TERMINATED", "SUCCESS_WITH_FAILURES", "FAILED"),
             ("TERMINATED", "RUN_EXECUTION_ERROR", "FAILED"),
