@@ -7,5 +7,5 @@ __pycache__/
 # This checkout's live configuration is generated from the tracked template.
 workflow-monitoring.yml
 
-# Generated only when monitoring_data_source_config.source is jobs_api.
+# Generated from the local Jobs API monitoring configuration.
 resources/workflow-monitoring.jobs-api.job.yml

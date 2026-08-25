@@ -17,16 +17,17 @@ import yaml
 
 from src.collect_workflow_monitoring_jobs_api import (
     _last_successful_collection_by_workspace_and_job,
+    _nonterminal_run_ids_by_job,
     _normalized_run_state,
 )
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
     ActiveWorkflow,
-    MonitoringDataSourceConfiguration,
+    JobsApiConfiguration,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
+    generate_collector_job_resource,
     generate_dashboard,
-    generate_jobs_api_resource,
     load_workflow_monitoring_configuration,
 )
 
@@ -36,7 +37,10 @@ SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.l
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
-SYSTEM_TABLES_SOURCE = MonitoringDataSourceConfiguration(source="system_tables")
+DEFAULT_JOBS_API = JobsApiConfiguration(
+    catalog="workflow_monitoring",
+    schema="lakeflow_jobs",
+)
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -54,7 +58,6 @@ class ConfigurationTests(unittest.TestCase):
                 "all supported schedules",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -65,18 +68,21 @@ class ConfigurationTests(unittest.TestCase):
                       frequency: daily
                       completion_time: "06:00"
                   - job_name: weekly
+                    job_id: 2
                     monitoring_status: active
                     sla:
                       frequency: weekly
                       completion_time: "07:00"
                       day_of_week: monday
                   - job_name: fortnightly
+                    job_id: 3
                     monitoring_status: active
                     sla:
                       frequency: fortnightly
                       completion_time: "08:00"
                       first_deadline_date: "2026-01-12"
                   - job_name: monthly
+                    job_id: 4
                     monitoring_status: active
                     sla:
                       frequency: monthly
@@ -91,7 +97,6 @@ class ConfigurationTests(unittest.TestCase):
                 "inactive workflow skips malformed fields",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -106,7 +111,6 @@ class ConfigurationTests(unittest.TestCase):
                 "duplicate job ID",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -126,7 +130,6 @@ class ConfigurationTests(unittest.TestCase):
                 "duplicate job name",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -146,11 +149,11 @@ class ConfigurationTests(unittest.TestCase):
                 "daily rejects weekly field",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
                   - job_name: invalid
+                    job_id: 1
                     monitoring_status: active
                     sla:
                       frequency: daily
@@ -164,7 +167,6 @@ class ConfigurationTests(unittest.TestCase):
                 "invalid timezone",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
                 workspace_id: "123456789"
                 default_timezone: Nowhere/Invalid
                 workflows: []
@@ -196,28 +198,12 @@ class ConfigurationTests(unittest.TestCase):
                         expected_workflow_count,
                     )
 
-    def test_data_source_rules_are_explicit(self) -> None:
+    def test_jobs_api_configuration_and_job_id_are_explicit(self) -> None:
         configuration_cases = (
             (
-                "system tables permits name resolution",
+                "active workflow requires job ID",
                 """
                 version: 2
-                monitoring_data_source_config: {source: system_tables}
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_name: orders
-                    monitoring_status: active
-                    sla: {frequency: daily, completion_time: "06:00"}
-                """,
-                "system_tables",
-                None,
-            ),
-            (
-                "Jobs API requires job ID",
-                """
-                version: 2
-                monitoring_data_source_config: {source: jobs_api}
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -226,14 +212,12 @@ class ConfigurationTests(unittest.TestCase):
                     sla: {frequency: daily, completion_time: "06:00"}
                 """,
                 None,
-                "job_id is required for jobs_api",
+                "'job_id' is a required property",
             ),
             (
-                "Jobs API uses dedicated storage fallback",
+                "default collector storage",
                 """
                 version: 2
-                monitoring_data_source_config:
-                  source: jobs_api
                 workspace_id: "123456789"
                 default_timezone: UTC
                 workflows:
@@ -242,12 +226,26 @@ class ConfigurationTests(unittest.TestCase):
                     monitoring_status: active
                     sla: {frequency: daily, completion_time: "06:00"}
                 """,
-                "jobs_api",
+                ("workflow_monitoring", "lakeflow_jobs"),
+                None,
+            ),
+            (
+                "collector storage override",
+                """
+                version: 2
+                jobs_api_config:
+                  catalog: monitoring_catalog
+                  schema: monitoring_schema
+                workspace_id: "123456789"
+                default_timezone: UTC
+                workflows: []
+                """,
+                ("monitoring_catalog", "monitoring_schema"),
                 None,
             ),
         )
 
-        for case_name, configuration_yaml, expected_source, expected_error in configuration_cases:
+        for case_name, configuration_yaml, expected_storage, expected_error in configuration_cases:
             with self.subTest(case_name), tempfile.TemporaryDirectory() as temporary_directory:
                 configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
                 configuration_path.write_text(
@@ -263,12 +261,10 @@ class ConfigurationTests(unittest.TestCase):
                     configuration_path,
                     SCHEMA_PATH,
                 )
-                self.assertEqual(configuration.monitoring_data_source.source, expected_source)
-                if expected_source == "jobs_api":
-                    self.assertEqual(
-                        configuration.monitoring_data_source.catalog, "workflow_monitoring"
-                    )
-                    self.assertEqual(configuration.monitoring_data_source.schema, "lakeflow_jobs")
+                self.assertEqual(
+                    (configuration.jobs_api.catalog, configuration.jobs_api.schema),
+                    expected_storage,
+                )
 
 
 class DashboardGenerationTests(unittest.TestCase):
@@ -281,7 +277,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "active workflow",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
-                    monitoring_data_source=SYSTEM_TABLES_SOURCE,
+                    jobs_api=DEFAULT_JOBS_API,
                     active_workflows=(
                         ActiveWorkflow(
                             job_name="owner's monthly workflow",
@@ -301,7 +297,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "zero active workflows",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
-                    monitoring_data_source=SYSTEM_TABLES_SOURCE,
+                    jobs_api=DEFAULT_JOBS_API,
                     active_workflows=(),
                 ),
                 ("WHERE false", "CAST(NULL AS STRING) AS configured_job_id"),
@@ -323,7 +319,7 @@ class DashboardGenerationTests(unittest.TestCase):
                                         "WITH configured_workflows AS (\n",
                                         "{{CONFIGURED_WORKFLOWS}}\n",
                                         ") {{WORKFLOW_RESOLUTION}} "
-                                        "JOIN {{JOB_RUN_TIMELINE_SOURCE}} r ON true",
+                                        "JOIN {{COLLECTED_RUNS_TABLE}} r ON true",
                                     ]
                                 }
                             ],
@@ -350,7 +346,7 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            monitoring_data_source=SYSTEM_TABLES_SOURCE,
+            jobs_api=DEFAULT_JOBS_API,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -363,30 +359,11 @@ class DashboardGenerationTests(unittest.TestCase):
                     temporary_path / "dashboard.json",
                 )
 
-    def test_system_tables_filters_deleted_jobs_after_latest_version(self) -> None:
-        configuration = WorkflowMonitoringConfiguration(
-            workspace_id="123456789",
-            active_workflows=(),
-            monitoring_data_source=SYSTEM_TABLES_SOURCE,
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            dashboard_path = Path(temporary_directory) / "dashboard.json"
-            generate_dashboard(configuration, SCAFFOLD_PATH, dashboard_path)
-            generated_dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
-
-        for dataset in generated_dashboard["datasets"]:
-            dataset_sql = "".join(dataset["queryLines"])
-            latest_version_position = dataset_sql.index(
-                "QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id"
-            )
-            deletion_filter_position = dataset_sql.index("WHERE delete_time IS NULL")
-            self.assertLess(latest_version_position, deletion_filter_position)
-
     def test_generation_injects_valid_custom_visualizations(self) -> None:
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            monitoring_data_source=SYSTEM_TABLES_SOURCE,
+            jobs_api=DEFAULT_JOBS_API,
         )
         expected_visualizations = {
             "sla-delivery-calendar": "sla-delivery-calendar.vega.json",
@@ -443,11 +420,10 @@ class DashboardGenerationTests(unittest.TestCase):
                     }
                     self.assertLessEqual(referenced_fields - derived_fields, encoded_fields)
 
-    def test_jobs_api_generation_uses_governed_tables_and_collector_job(self) -> None:
+    def test_generation_uses_governed_tables_and_collector_job(self) -> None:
         jobs_api_configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
-            monitoring_data_source=MonitoringDataSourceConfiguration(
-                source="jobs_api",
+            jobs_api=JobsApiConfiguration(
                 catalog="monitoring_catalog",
                 schema="monitoring_schema",
             ),
@@ -468,7 +444,7 @@ class DashboardGenerationTests(unittest.TestCase):
             dashboard_path = temporary_path / "dashboard.json"
             resource_path = temporary_path / "workflow-monitoring.jobs-api.job.yml"
             generate_dashboard(jobs_api_configuration, SCAFFOLD_PATH, dashboard_path)
-            generate_jobs_api_resource(jobs_api_configuration, resource_path)
+            generate_collector_job_resource(jobs_api_configuration, resource_path)
 
             dashboard_text = dashboard_path.read_text(encoding="utf-8")
             self.assertIn(
@@ -499,16 +475,6 @@ class DashboardGenerationTests(unittest.TestCase):
                 "${resources.dashboards.workflow_monitoring.id}",
             )
 
-            generate_jobs_api_resource(
-                WorkflowMonitoringConfiguration(
-                    workspace_id="123456789",
-                    monitoring_data_source=SYSTEM_TABLES_SOURCE,
-                    active_workflows=(),
-                ),
-                resource_path,
-            )
-            self.assertFalse(resource_path.exists())
-
 
 class DashboardScaffoldTests(unittest.TestCase):
     """Protect names and field bindings used by dashboard widgets and filters."""
@@ -519,7 +485,6 @@ class DashboardScaffoldTests(unittest.TestCase):
             "workflow_status",
             "run_history",
             "sla_history",
-            "daily_cost",
         }
         actual_dataset_names = {dataset["name"] for dataset in scaffold["datasets"]}
         self.assertEqual(actual_dataset_names, expected_dataset_names)
@@ -529,7 +494,7 @@ class DashboardScaffoldTests(unittest.TestCase):
             self.assertEqual(dataset_sql.count("{{CONFIGURED_WORKFLOWS}}"), 1)
             self.assertEqual(dataset_sql.count("{{WORKFLOW_RESOLUTION}}"), 1)
 
-        expected_page_names = {"operations", "trends-cost"}
+        expected_page_names = {"operations", "trends"}
         self.assertEqual({page["name"] for page in scaffold["pages"]}, expected_page_names)
 
         seen_widget_names: set[str] = set()
@@ -582,13 +547,13 @@ class DashboardScaffoldTests(unittest.TestCase):
             "to_utc_timestamp",
             "LEAST(day_of_month, day(last_day(add_months(local_today, offset))))",
             "'FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED'",
-            "system.billing.list_prices",
             "late_recoveries AS",
             "run_metrics_30d AS",
-            "estimated_list_cost_30d",
+            "{{COLLECTED_RUNS_TABLE}}",
         )
         for required_sql_fragment in required_sql_fragments:
             self.assertIn(required_sql_fragment, scaffold_text)
+        self.assertNotIn("system.", scaffold_text)
 
         for visualization_marker in CUSTOM_VISUALIZATION_FILES:
             self.assertEqual(scaffold_text.count(visualization_marker), 1)
@@ -661,6 +626,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             'RUN_STATE_TABLE_NAME = "workflow_run_api_state"',
             'COLLECTION_STATUS_TABLE_NAME = "workflow_api_collection_status"',
             "active_only=True",
+            "jobs.get_run(run_id=stored_run_id)",
             "INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15",
             "CREATE CATALOG IF NOT EXISTS",
             "CREATE SCHEMA IF NOT EXISTS",
@@ -762,6 +728,52 @@ class JobsApiCollectorTests(unittest.TestCase):
             "111",
         )
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
+
+    def test_nonterminal_run_reconciliation_is_scoped(self) -> None:
+        run_state_rows = [
+            SimpleNamespace(workspace_id="111", job_id="42", run_id=900, result_state="RUNNING"),
+            SimpleNamespace(workspace_id="111", job_id="43", run_id=901, result_state="SUCCEEDED"),
+            SimpleNamespace(workspace_id="222", job_id="42", run_id=902, result_state="RUNNING"),
+            SimpleNamespace(workspace_id="111", job_id="99", run_id=903, result_state="RUNNING"),
+        ]
+
+        class RunStateDataFrame:
+            def __init__(self, rows: list[SimpleNamespace]) -> None:
+                self.rows = rows
+
+            def select(self, *_column_names: str) -> RunStateDataFrame:
+                return self
+
+            def where(self, predicate: str) -> RunStateDataFrame:
+                if predicate.startswith("workspace_id ="):
+                    selected_workspace_id = predicate.split("'")[1]
+                    self.rows = [
+                        row for row in self.rows if row.workspace_id == selected_workspace_id
+                    ]
+                elif predicate.startswith("job_id IN"):
+                    selected_job_ids = set(re.findall(r"'([0-9]+)'", predicate))
+                    self.rows = [row for row in self.rows if row.job_id in selected_job_ids]
+                elif predicate.startswith("result_state NOT IN"):
+                    terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
+                    self.rows = [
+                        row for row in self.rows if row.result_state not in terminal_states
+                    ]
+                return self
+
+            def collect(self) -> list[SimpleNamespace]:
+                return self.rows
+
+        spark_session = SimpleNamespace(
+            table=lambda _table_name: RunStateDataFrame(run_state_rows.copy())
+        )
+        nonterminal_runs = _nonterminal_run_ids_by_job(
+            spark_session,
+            "monitoring",
+            "jobs",
+            "111",
+            [42, 43],
+        )
+        self.assertEqual(nonterminal_runs, {42: {900}})
 
 
 class RepositoryContractTests(unittest.TestCase):

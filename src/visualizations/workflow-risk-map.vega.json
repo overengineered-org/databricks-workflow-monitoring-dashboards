@@ -1,6 +1,6 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-  "description": "Combines run reliability, SLA compliance, and list cost for each workflow.",
+  "description": "Combines run reliability, SLA compliance, and duration for each workflow.",
   "width": "container",
   "height": "container",
   "data": {
@@ -58,9 +58,9 @@
       }
     },
     "size": {
-      "field": "estimated_list_cost_30d",
+      "field": "average_duration_seconds_30d",
       "type": "quantitative",
-      "title": "Estimated list cost",
+      "title": "Average duration",
       "scale": {
         "range": [
           140,
@@ -102,12 +102,6 @@
         "type": "quantitative",
         "title": "SLA compliance",
         "format": ".1%"
-      },
-      {
-        "field": "estimated_list_cost_30d",
-        "type": "quantitative",
-        "title": "Estimated list cost (USD)",
-        "format": "$,.2f"
       },
       {
         "field": "average_duration_seconds_30d",

@@ -22,6 +22,7 @@ SKIPPED_TERMINATION_CODES = {
     "MAX_CONCURRENT_RUNS_EXCEEDED",
     "MAX_JOB_QUEUE_SIZE_EXCEEDED",
 }
+TERMINAL_RUN_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED"}
 
 
 def _run_state_schema() -> Any:
@@ -271,6 +272,39 @@ def _last_successful_collection_by_workspace_and_job(
     }
 
 
+def _nonterminal_run_ids_by_job(
+    spark_session: Any,
+    catalog_name: str,
+    schema_name: str,
+    workspace_id: str,
+    monitored_job_ids: list[int],
+) -> dict[int, set[int]]:
+    if not monitored_job_ids:
+        return {}
+
+    run_state_table = _qualified_table_name(
+        catalog_name,
+        schema_name,
+        RUN_STATE_TABLE_NAME,
+    )
+    monitored_job_id_sql = ", ".join(f"'{job_id}'" for job_id in monitored_job_ids)
+    terminal_state_sql = ", ".join(f"'{run_state}'" for run_state in sorted(TERMINAL_RUN_STATES))
+    nonterminal_run_rows = (
+        spark_session.table(run_state_table)
+        .select("job_id", "run_id")
+        .where(f"workspace_id = '{workspace_id}'")
+        .where(f"job_id IN ({monitored_job_id_sql})")
+        .where(f"result_state NOT IN ({terminal_state_sql})")
+        .collect()
+    )
+    nonterminal_run_ids_by_job: dict[int, set[int]] = {}
+    for nonterminal_run_row in nonterminal_run_rows:
+        nonterminal_run_ids_by_job.setdefault(int(nonterminal_run_row.job_id), set()).add(
+            int(nonterminal_run_row.run_id)
+        )
+    return nonterminal_run_ids_by_job
+
+
 def main() -> None:
     from databricks.sdk import WorkspaceClient  # type: ignore[import-not-found]
 
@@ -284,8 +318,11 @@ def main() -> None:
     )
     workspace_id = _validated_workspace_id(notebook_utilities.widgets.get("workspace_id"))
     monitored_job_ids = json.loads(notebook_utilities.widgets.get("monitored_job_ids_json"))
-    if not isinstance(monitored_job_ids, list):
-        raise ValueError("monitored_job_ids_json must contain a list")
+    if not isinstance(monitored_job_ids, list) or any(
+        isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0
+        for job_id in monitored_job_ids
+    ):
+        raise ValueError("monitored_job_ids_json must contain positive integer job IDs")
 
     _create_governed_storage(spark_session, catalog_name, schema_name)
     jobs_api_client = WorkspaceClient()
@@ -296,6 +333,13 @@ def main() -> None:
         catalog_name,
         schema_name,
         workspace_id,
+    )
+    nonterminal_run_ids_by_job = _nonterminal_run_ids_by_job(
+        spark_session,
+        catalog_name,
+        schema_name,
+        workspace_id,
+        monitored_job_ids,
     )
     collected_run_rows: list[dict[str, Any]] = []
     collection_status_rows: list[dict[str, Any]] = []
@@ -329,6 +373,12 @@ def main() -> None:
                         active_only=True,
                         expand_tasks=False,
                     )
+                }
+            )
+            job_runs_by_id.update(
+                {
+                    stored_run_id: jobs_api_client.jobs.get_run(run_id=stored_run_id)
+                    for stored_run_id in nonterminal_run_ids_by_job.get(job_id, set())
                 }
             )
             collected_run_rows.extend(

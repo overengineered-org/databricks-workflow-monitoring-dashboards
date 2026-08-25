@@ -102,11 +102,6 @@
         "field": "result_state",
         "type": "nominal",
         "title": "Result"
-      },
-      {
-        "field": "compute_type",
-        "type": "nominal",
-        "title": "Compute"
       }
     ]
   },

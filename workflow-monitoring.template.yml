@@ -3,16 +3,10 @@
 # Copy this template to workflow-monitoring.yml before adding the Lakeflow jobs you monitor.
 version: 2
 
-# Choose one source explicitly. system_tables is read-only and may be delayed.
-monitoring_data_source_config:
-  source: system_tables
-
-# For five-minute Jobs API polling, replace the block above with:
-# monitoring_data_source_config:
-#   source: jobs_api
-#   storage:
-#     catalog: workflow_monitoring
-#     schema: lakeflow_jobs
+# Omit this block to use workflow_monitoring.lakeflow_jobs.
+jobs_api_config:
+  catalog: workflow_monitoring
+  schema: lakeflow_jobs
 # Find this numeric ID with `databricks auth describe --profile <name>`.
 workspace_id: "1234567890123456"
 # A workflow can override this with sla.timezone.

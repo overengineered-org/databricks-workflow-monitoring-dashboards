@@ -21,7 +21,7 @@ DEFAULT_DASHBOARD_PATH = Path("src/dashboards/workflow-monitoring.lvdash.json")
 DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.job.yml")
 CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
 WORKFLOW_RESOLUTION_MARKER = "{{WORKFLOW_RESOLUTION}}"
-JOB_RUN_TIMELINE_SOURCE_MARKER = "{{JOB_RUN_TIMELINE_SOURCE}}"
+COLLECTED_RUNS_TABLE_MARKER = "{{COLLECTED_RUNS_TABLE}}"
 DEFAULT_JOBS_API_CATALOG = "workflow_monitoring"
 DEFAULT_JOBS_API_SCHEMA = "lakeflow_jobs"
 JOBS_API_RUN_STATE_TABLE = "workflow_run_api_state"
@@ -53,17 +53,16 @@ class ActiveWorkflow:
     """One workflow included in dashboard queries."""
 
     job_name: str
-    job_id: int | None
+    job_id: int
     sla: ServiceLevelAgreement
 
 
 @dataclass(frozen=True)
-class MonitoringDataSourceConfiguration:
-    """Selected workflow state source and its optional managed storage."""
+class JobsApiConfiguration:
+    """Governed storage used by the Jobs API collector."""
 
-    source: str
-    catalog: str = ""
-    schema: str = ""
+    catalog: str
+    schema: str
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,7 @@ class WorkflowMonitoringConfiguration:
 
     workspace_id: str
     active_workflows: tuple[ActiveWorkflow, ...]
-    monitoring_data_source: MonitoringDataSourceConfiguration
+    jobs_api: JobsApiConfiguration
 
 
 def load_workflow_monitoring_configuration(
@@ -88,13 +87,10 @@ def load_workflow_monitoring_configuration(
     _validate_configuration_schema(configuration_document, schema_path)
 
     workspace_id = configuration_document["workspace_id"]
-    data_source_document = configuration_document["monitoring_data_source_config"]
-    data_source_name = data_source_document["source"]
-    data_source_storage = data_source_document.get("storage", {})
-    monitoring_data_source = MonitoringDataSourceConfiguration(
-        source=data_source_name,
-        catalog=data_source_storage.get("catalog", DEFAULT_JOBS_API_CATALOG),
-        schema=data_source_storage.get("schema", DEFAULT_JOBS_API_SCHEMA),
+    jobs_api_document = configuration_document.get("jobs_api_config", {})
+    jobs_api_configuration = JobsApiConfiguration(
+        catalog=jobs_api_document.get("catalog", DEFAULT_JOBS_API_CATALOG),
+        schema=jobs_api_document.get("schema", DEFAULT_JOBS_API_SCHEMA),
     )
     default_timezone = configuration_document["default_timezone"]
     _validate_iana_timezone("default_timezone", default_timezone)
@@ -108,8 +104,6 @@ def load_workflow_monitoring_configuration(
             continue
 
         active_workflow = _validate_active_workflow(workflow_document, default_timezone)
-        if data_source_name == "jobs_api" and active_workflow.job_id is None:
-            raise ValueError(f"workflows[{workflow_index}]: job_id is required for jobs_api")
         if active_workflow.job_name in active_job_name_locations:
             previous_index = active_job_name_locations[active_workflow.job_name]
             raise ValueError(
@@ -131,7 +125,7 @@ def load_workflow_monitoring_configuration(
     return WorkflowMonitoringConfiguration(
         workspace_id=workspace_id,
         active_workflows=tuple(active_workflows),
-        monitoring_data_source=monitoring_data_source,
+        jobs_api=jobs_api_configuration,
     )
 
 
@@ -191,7 +185,7 @@ def _validate_active_workflow(
     _validate_schedule_fields(sla_document)
     return ActiveWorkflow(
         job_name=job_name,
-        job_id=workflow_document.get("job_id"),
+        job_id=workflow_document["job_id"],
         sla=ServiceLevelAgreement(
             frequency=sla_document["frequency"],
             completion_time=completion_time,
@@ -257,7 +251,9 @@ def generate_dashboard(
 
     source_markers = {
         WORKFLOW_RESOLUTION_MARKER: _render_workflow_resolution_sql(configuration),
-        JOB_RUN_TIMELINE_SOURCE_MARKER: _render_job_run_timeline_source(configuration),
+        COLLECTED_RUNS_TABLE_MARKER: _qualified_collector_table(
+            configuration, JOBS_API_RUN_STATE_TABLE
+        ),
     }
     for source_marker, source_sql in source_markers.items():
         source_replacement_count = _replace_text_marker(
@@ -288,16 +284,11 @@ def generate_dashboard(
     output_path.write_text(generated_dashboard_json + "\n", encoding="utf-8")
 
 
-def generate_jobs_api_resource(
+def generate_collector_job_resource(
     configuration: WorkflowMonitoringConfiguration,
     generated_resource_path: Path,
 ) -> None:
-    """Create the collector Job only for the explicitly selected Jobs API source."""
-
-    if configuration.monitoring_data_source.source == "system_tables":
-        if generated_resource_path.exists():
-            generated_resource_path.unlink()
-        return
+    """Create the scheduled Jobs API collector and dashboard refresh Job."""
 
     monitored_job_ids = [workflow.job_id for workflow in configuration.active_workflows]
     generated_job_resource_document = {
@@ -318,11 +309,11 @@ def generate_jobs_api_resource(
                     "parameters": [
                         {
                             "name": "catalog_name",
-                            "default": configuration.monitoring_data_source.catalog,
+                            "default": configuration.jobs_api.catalog,
                         },
                         {
                             "name": "schema_name",
-                            "default": configuration.monitoring_data_source.schema,
+                            "default": configuration.jobs_api.schema,
                         },
                         {"name": "workspace_id", "default": configuration.workspace_id},
                         {
@@ -365,51 +356,12 @@ def generate_jobs_api_resource(
 def _render_workflow_resolution_sql(
     configuration: WorkflowMonitoringConfiguration,
 ) -> str:
-    if configuration.monitoring_data_source.source == "system_tables":
-        return "\n".join(
-            (
-                "-- Resolve names or IDs from the latest live system-table record.",
-                "latest_jobs AS (",
-                "  SELECT workspace_id, job_id, name",
-                "  FROM (",
-                "    SELECT workspace_id, job_id, name, delete_time",
-                "    FROM system.lakeflow.jobs",
-                "    WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)",
-                "    QUALIFY ROW_NUMBER() OVER (PARTITION BY workspace_id, job_id ORDER BY change_time DESC) = 1",
-                "  ) latest_job_versions",
-                "  WHERE delete_time IS NULL",
-                "),",
-                "name_matches AS (",
-                "  SELECT c.configured_order, COUNT(j.job_id) AS match_count, MAX(j.job_id) AS matched_job_id",
-                "  FROM configured_workflows c",
-                "  LEFT JOIN latest_jobs j ON c.workspace_id = j.workspace_id",
-                "    AND c.configured_job_id IS NULL AND c.configured_job_name = j.name",
-                "  GROUP BY c.configured_order",
-                "),",
-                "resolved_workflows AS (",
-                "  SELECT c.*,",
-                "    CASE WHEN c.configured_job_id IS NOT NULL THEN id_job.job_id",
-                "      WHEN n.match_count = 1 THEN n.matched_job_id END AS resolved_job_id,",
-                "    c.configured_job_name AS workflow_name,",
-                "    CASE",
-                "      WHEN c.configured_job_id IS NOT NULL AND id_job.job_id IS NULL THEN 'Missing job ID'",
-                "      WHEN c.configured_job_id IS NOT NULL AND id_job.name <> c.configured_job_name THEN 'Job ID and name mismatch'",
-                "      WHEN c.configured_job_id IS NULL AND n.match_count = 0 THEN 'Missing job name'",
-                "      WHEN c.configured_job_id IS NULL AND n.match_count > 1 THEN 'Ambiguous job name'",
-                "    END AS configuration_problem",
-                "  FROM configured_workflows c",
-                "  LEFT JOIN latest_jobs id_job ON c.workspace_id = id_job.workspace_id",
-                "    AND c.configured_job_id = id_job.job_id",
-                "  LEFT JOIN name_matches n ON c.configured_order = n.configured_order",
-                "),",
-            )
-        )
-    collection_status_table = _qualified_jobs_api_table(
+    collection_status_table = _qualified_collector_table(
         configuration, JOBS_API_COLLECTION_STATUS_TABLE
     )
     return "\n".join(
         (
-            "-- Jobs API mode resolves directly from required configured IDs.",
+            "-- Resolve configured job IDs through their collector checkpoints.",
             "collection_checkpoints AS (",
             "  SELECT workspace_id, job_id, last_collection_attempt_at,",
             "    last_successful_collection_at, last_error_message",
@@ -433,18 +385,11 @@ def _render_workflow_resolution_sql(
     )
 
 
-def _render_job_run_timeline_source(configuration: WorkflowMonitoringConfiguration) -> str:
-    if configuration.monitoring_data_source.source == "system_tables":
-        return "system.lakeflow.job_run_timeline"
-    return _qualified_jobs_api_table(configuration, JOBS_API_RUN_STATE_TABLE)
-
-
-def _qualified_jobs_api_table(
+def _qualified_collector_table(
     configuration: WorkflowMonitoringConfiguration,
     table_name: str,
 ) -> str:
-    monitoring_data_source = configuration.monitoring_data_source
-    return f"`{monitoring_data_source.catalog}`.`{monitoring_data_source.schema}`.`{table_name}`"
+    return f"`{configuration.jobs_api.catalog}`.`{configuration.jobs_api.schema}`.`{table_name}`"
 
 
 def _render_configured_workflows_sql(configuration: WorkflowMonitoringConfiguration) -> str:
@@ -468,9 +413,7 @@ def _render_configured_workflows_sql(configuration: WorkflowMonitoringConfigurat
 
     configured_workflow_selects: list[str] = []
     for workflow_index, workflow in enumerate(configuration.active_workflows, start=1):
-        job_id_sql = "CAST(NULL AS STRING)"
-        if workflow.job_id is not None:
-            job_id_sql = f"CAST('{workflow.job_id}' AS STRING)"
+        job_id_sql = f"CAST('{workflow.job_id}' AS STRING)"
 
         first_deadline_date_sql = "CAST(NULL AS DATE)"
         if workflow.sla.first_deadline_date:
@@ -598,7 +541,7 @@ def main(command_arguments: list[str] | None = None) -> int:
             parsed_arguments.scaffold,
             parsed_arguments.output,
         )
-        generate_jobs_api_resource(
+        generate_collector_job_resource(
             configuration,
             parsed_arguments.jobs_api_resource_output,
         )

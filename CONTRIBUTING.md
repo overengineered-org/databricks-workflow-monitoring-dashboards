@@ -57,7 +57,7 @@ uv run python workflow_monitoring_dashboard.py generate \
 
 The public template must contain fake values. Local `workflow-monitoring.yml`, `.databricks/`, and the generated Jobs API resource are ignored and must stay out of contributions.
 
-Test both `monitoring_data_source_config` paths. `system_tables` must not leave a collector Job resource. `jobs_api` must require active job IDs and generate the five-minute collector resource.
+The product has one Jobs API path. Every active workflow must require a job ID, and generation must always create the fixed five-minute collector resource.
 
 ## Validate your change
 

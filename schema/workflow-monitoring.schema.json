@@ -5,14 +5,12 @@
   "title": "Databricks workflow monitoring configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "monitoring_data_source_config", "workspace_id", "default_timezone", "workflows"],
+  "required": ["version", "workspace_id", "default_timezone", "workflows"],
   "properties": {
     "version": { "const": 2, "description": "Configuration format version." },
-    "monitoring_data_source_config": {
-      "oneOf": [
-        { "$ref": "#/$defs/system_tables_data_source" },
-        { "$ref": "#/$defs/jobs_api_data_source" }
-      ]
+    "jobs_api_config": {
+      "$ref": "#/$defs/jobs_api_config",
+      "description": "Optional governed storage override for the Jobs API collector."
     },
     "workspace_id": {
       "type": "string",
@@ -36,40 +34,18 @@
     }
   },
   "$defs": {
-    "system_tables_data_source": {
+    "jobs_api_config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source"],
-      "properties": {
-        "source": {
-          "const": "system_tables",
-          "description": "Read Lakeflow system tables without creating collector resources."
-        }
-      }
-    },
-    "jobs_api_data_source": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["source"],
-      "properties": {
-        "source": {
-          "const": "jobs_api",
-          "description": "Poll the Jobs API into managed Delta tables before refreshing the dashboard."
-        },
-        "storage": { "$ref": "#/$defs/jobs_api_storage" }
-      }
-    },
-    "jobs_api_storage": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["catalog", "schema"],
       "properties": {
         "catalog": {
           "$ref": "#/$defs/unity_catalog_identifier",
+          "default": "workflow_monitoring",
           "description": "Unity Catalog catalog for collector tables."
         },
         "schema": {
           "$ref": "#/$defs/unity_catalog_identifier",
+          "default": "lakeflow_jobs",
           "description": "Unity Catalog schema for collector tables."
         }
       }
@@ -82,17 +58,17 @@
     "active_workflow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["job_name", "monitoring_status", "sla"],
+      "required": ["job_name", "job_id", "monitoring_status", "sla"],
       "properties": {
         "job_name": {
           "type": "string",
           "minLength": 1,
-          "description": "Dashboard label. Must exactly match Databricks only when system_tables resolves without job_id."
+          "description": "Dashboard label for the configured Databricks job ID."
         },
         "job_id": {
           "type": "integer",
           "minimum": 1,
-          "description": "Stable Databricks job ID. Required by the Jobs API source."
+          "description": "Stable Databricks job ID polled by the collector."
         },
         "monitoring_status": {
           "const": "active",
