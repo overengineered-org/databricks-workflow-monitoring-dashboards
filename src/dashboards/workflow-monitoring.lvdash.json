@@ -99,7 +99,7 @@
         "  FROM resolved_workflows r INNER JOIN `workflow_monitoring`.`lakeflow_jobs`.`workflow_run_api_state` t ON r.workspace_id = t.workspace_id AND r.resolved_job_id = t.job_id\n",
         "  WHERE t.period_start_time >= date_sub(current_date(), 365)\n",
         "  GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.resolved_job_id, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED')\n",
-        "),\n",
+        ")\n",
         "SELECT r.workflow_name, r.job_id, r.run_id, to_date(from_utc_timestamp(r.run_end_time, 'UTC')) AS run_date, r.run_start_time, r.run_end_time,\n",
         "  unix_timestamp(r.run_end_time) - unix_timestamp(r.run_start_time) AS duration_seconds, r.result_state,\n",
         "  CASE WHEN r.result_state = 'SUCCEEDED' THEN 'Success' ELSE 'Failure' END AS run_outcome\n",

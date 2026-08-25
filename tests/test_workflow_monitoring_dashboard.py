@@ -554,6 +554,7 @@ class DashboardScaffoldTests(unittest.TestCase):
         for required_sql_fragment in required_sql_fragments:
             self.assertIn(required_sql_fragment, scaffold_text)
         self.assertNotIn("system.", scaffold_text)
+        self.assertNotIn("),\nSELECT", scaffold_text)
 
         for visualization_marker in CUSTOM_VISUALIZATION_FILES:
             self.assertEqual(scaffold_text.count(visualization_marker), 1)
