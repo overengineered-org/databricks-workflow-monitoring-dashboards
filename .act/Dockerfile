@@ -14,5 +14,5 @@ ENV UV_LINK_MODE=copy
 # Pin the Databricks CLI so local validation does not change unexpectedly.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends jq python3 python3-venv ripgrep \
-    && curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/v1.12.1/install.sh | sh \
+    && curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/v1.13.0/install.sh | sh \
     && rm -rf /var/lib/apt/lists/*

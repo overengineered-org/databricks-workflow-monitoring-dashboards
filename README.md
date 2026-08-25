@@ -19,7 +19,7 @@ Cost uses delayed billing system tables in both paths. It is estimated Databrick
 
 ### 1. Install the tools
 
-You need Python 3.11 or newer, `uv` 0.12 or newer, Databricks CLI 0.292 or newer, and `jq`.
+You need Python 3.11 or newer, `uv` 0.12 or newer, Databricks CLI 1.13.0 or newer, and `jq`.
 
 Docker and `act` are needed only for the full local validation gate.
 
@@ -327,3 +327,5 @@ Upstream examples and generated dashboard files must use fake account values. Ad
 Official references: [AI/BI dashboards](https://docs.databricks.com/aws/en/dashboards/), [Lakeflow Jobs API 2.2](https://docs.databricks.com/aws/en/reference/jobs-api-2-2-updates), [system tables](https://docs.databricks.com/aws/en/admin/system-tables/), and [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles/).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull-request guidance.
+
+Maintainers publish SemVer tags and GitHub Releases locally. See [RELEASING.md](RELEASING.md).

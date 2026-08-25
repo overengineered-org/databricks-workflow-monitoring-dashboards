@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -34,6 +35,7 @@ SCHEMA_PATH = REPOSITORY_ROOT / "schema/workflow-monitoring.schema.json"
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
+RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
 SYSTEM_TABLES_SOURCE = MonitoringDataSourceConfiguration(source="system_tables")
 
 
@@ -760,6 +762,45 @@ class JobsApiCollectorTests(unittest.TestCase):
             "111",
         )
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
+
+
+class RepositoryContractTests(unittest.TestCase):
+    """Keep deployment and release tools on one reviewed contract."""
+
+    def test_cli_and_release_contracts_are_aligned(self) -> None:
+        bundle_configuration = yaml.safe_load(
+            (REPOSITORY_ROOT / "databricks.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            bundle_configuration["bundle"]["databricks_cli_version"],
+            ">= 1.13.0",
+        )
+
+        act_dockerfile = (REPOSITORY_ROOT / ".act/Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("databricks/setup-cli/v1.13.0/install.sh", act_dockerfile)
+
+        release_notes_configuration = yaml.safe_load(
+            (REPOSITORY_ROOT / ".github/release.yml").read_text(encoding="utf-8")
+        )
+        release_categories = release_notes_configuration["changelog"]["categories"]
+        self.assertEqual(release_categories[-1]["labels"], ["*"])
+
+        syntax_check = subprocess.run(
+            ["bash", "-n", str(RELEASE_SCRIPT_PATH)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(syntax_check.returncode, 0, syntax_check.stderr)
+
+        help_check = subprocess.run(
+            ["bash", str(RELEASE_SCRIPT_PATH), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(help_check.returncode, 0, help_check.stderr)
+        self.assertIn("--check|--publish", help_check.stdout)
 
 
 if __name__ == "__main__":

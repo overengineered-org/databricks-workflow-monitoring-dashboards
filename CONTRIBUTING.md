@@ -17,7 +17,7 @@ Small documentation fixes do not need an issue first.
 
 ## Set up the project
 
-You need Python 3.11 or newer and `uv` 0.12 or newer.
+You need Python 3.11 or newer, `uv` 0.12 or newer, and Databricks CLI 1.13.0 or newer.
 
 ```sh
 git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
@@ -99,6 +99,8 @@ Use a concise title and explain why the change is needed. Include:
 Use short conventional commit messages such as `fix: correct monthly deadline`. Keep the first line at 50 characters or fewer.
 
 Pull requests are squash-merged after approval. A passing local workflow does not replace review.
+
+Maintainers release only from clean, synchronized `main`. See [RELEASING.md](RELEASING.md) for the local check and publish commands.
 
 ## Review checklist
 

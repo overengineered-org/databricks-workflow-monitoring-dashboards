@@ -1,5 +1,7 @@
 bundle:
   name: databricks-workflow-monitoring-dashboards
+  # Keep local, Act, and deployment behavior on the reviewed CLI generation.
+  databricks_cli_version: ">= 1.13.0"
 
 # Keep resource definitions small by storing each resource in resources/.
 include:
