@@ -58,6 +58,16 @@ databricks jobs list --profile <name>
 Edit the tracked `workflow-monitoring.yml`. Adopter repositories should commit their own
 non-secret workspace and Job IDs. Upstream keeps fake values only.
 
+Choose one storage mode:
+
+| Mode | Configuration | Catalog and schema behavior |
+| --- | --- | --- |
+| Bring your own | Set both `jobs_api_config.catalog` and `jobs_api_config.schema` | Uses existing objects and skips catalog/schema DDL. |
+| Automatic | Omit the entire `jobs_api_config` block | Creates `workflow_monitoring.lakeflow_jobs` if missing. |
+
+In both modes, the collector creates its two Delta tables if missing. A partial
+`jobs_api_config` block is invalid.
+
 ```yaml
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
 
@@ -77,16 +87,6 @@ workflows:
       completion_time: "06:00"
       timezone: Australia/Melbourne
 ```
-
-Choose one storage mode:
-
-| Mode | Configuration | Catalog and schema behavior |
-| --- | --- | --- |
-| Bring your own | Set both `jobs_api_config.catalog` and `jobs_api_config.schema` | Uses the existing catalog and schema. Never creates them. |
-| Automatic | Omit the entire `jobs_api_config` block | Creates `workflow_monitoring.lakeflow_jobs` if missing. |
-
-In both modes, the collector creates its two Delta tables if missing. A partial
-`jobs_api_config` block is invalid.
 
 Every workflow entry requires:
 
@@ -203,10 +203,15 @@ The collector runs as the bundle deployer unless the adopter adds bundle `run_as
 Required identity access:
 
 1. Read configured Jobs and runs.
-2. Automatic mode: create the default catalog and schema.
-3. Bring-your-own mode: `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE` on the selected schema.
-4. Read and modify the two collector tables.
-5. Refresh the dashboard and use its SQL warehouse.
+2. Read and modify the two collector tables.
+3. Refresh the dashboard and use its SQL warehouse.
+
+Storage-specific access:
+
+| Mode | Extra Unity Catalog access |
+| --- | --- |
+| Bring your own | `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE` on the selected objects. |
+| Automatic | Rights to create the default catalog and schema. If either exists, grant the matching traversal and child-creation privileges. |
 
 ## Bundle settings
 
@@ -257,6 +262,7 @@ This is read-only. Empty results prove SQL parsing, fields, and access, not real
 
 - Five minutes is a polling target, not real time.
 - The first collection backfills at most 60 days.
+- Run and SLA history show the most recent 60 days.
 - Current status includes active lifecycle states. History and SLA metrics use terminal runs.
 - A deleted or inaccessible Job appears as a collection error.
 - One configuration targets one workspace.

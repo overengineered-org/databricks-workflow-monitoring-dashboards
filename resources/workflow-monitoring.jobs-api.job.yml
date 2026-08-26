@@ -10,21 +10,16 @@ resources:
         quartz_cron_expression: 0 0/5 * * * ?
         timezone_id: UTC
         pause_status: PAUSED
-      parameters:
-      - name: catalog_name
-        default: workflow_monitoring
-      - name: schema_name
-        default: lakeflow_jobs
-      - name: create_catalog_and_schema_if_missing
-        default: 'false'
-      - name: workspace_id
-        default: '1234567890123456'
-      - name: monitored_job_ids_json
-        default: '[]'
       tasks:
       - task_key: collect_jobs_api_state
         notebook_task:
           notebook_path: ../src/collect_workflow_monitoring_jobs_api.py
+          base_parameters:
+            catalog_name: workflow_monitoring
+            schema_name: lakeflow_jobs
+            create_catalog_and_schema_if_missing: 'false'
+            workspace_id: '1234567890123456'
+            monitored_job_ids_json: '[]'
         timeout_seconds: 240
         max_retries: 2
         min_retry_interval_millis: 30000

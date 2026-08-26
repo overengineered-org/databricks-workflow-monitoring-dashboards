@@ -25,7 +25,7 @@ from src.collect_workflow_monitoring_jobs_api import (
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
     ActiveWorkflow,
-    JobsApiConfiguration,
+    CollectorStorageConfiguration,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
     generate_collector_job_resource,
@@ -39,7 +39,7 @@ SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.l
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
-AUTOMATIC_JOBS_API_STORAGE = JobsApiConfiguration(
+AUTOMATIC_COLLECTOR_STORAGE = CollectorStorageConfiguration(
     catalog="workflow_monitoring",
     schema="lakeflow_jobs",
     create_catalog_and_schema_if_missing=True,
@@ -266,9 +266,9 @@ class ConfigurationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     (
-                        configuration.jobs_api.catalog,
-                        configuration.jobs_api.schema,
-                        configuration.jobs_api.create_catalog_and_schema_if_missing,
+                        configuration.collector_storage.catalog,
+                        configuration.collector_storage.schema,
+                        configuration.collector_storage.create_catalog_and_schema_if_missing,
                     ),
                     expected_storage,
                 )
@@ -284,7 +284,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "active workflow",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
-                    jobs_api=AUTOMATIC_JOBS_API_STORAGE,
+                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
                         ActiveWorkflow(
                             job_id=42,
@@ -303,7 +303,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "zero active workflows",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
-                    jobs_api=AUTOMATIC_JOBS_API_STORAGE,
+                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(),
                 ),
                 ("WHERE false", "CAST(NULL AS STRING) AS configured_job_id"),
@@ -352,7 +352,7 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            jobs_api=AUTOMATIC_JOBS_API_STORAGE,
+            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -369,7 +369,7 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            jobs_api=AUTOMATIC_JOBS_API_STORAGE,
+            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
         )
         expected_visualizations = {
             "sla-delivery-calendar": "sla-delivery-calendar.vega.json",
@@ -427,9 +427,9 @@ class DashboardGenerationTests(unittest.TestCase):
                     self.assertLessEqual(referenced_fields - derived_fields, encoded_fields)
 
     def test_generation_uses_governed_tables_and_collector_job(self) -> None:
-        jobs_api_configuration = WorkflowMonitoringConfiguration(
+        workflow_monitoring_configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
-            jobs_api=JobsApiConfiguration(
+            collector_storage=CollectorStorageConfiguration(
                 catalog="monitoring_catalog",
                 schema="monitoring_schema",
                 create_catalog_and_schema_if_missing=False,
@@ -449,8 +449,8 @@ class DashboardGenerationTests(unittest.TestCase):
             temporary_path = Path(temporary_directory)
             dashboard_path = temporary_path / "dashboard.json"
             resource_path = temporary_path / "workflow-monitoring.jobs-api.job.yml"
-            generate_dashboard(jobs_api_configuration, SCAFFOLD_PATH, dashboard_path)
-            generate_collector_job_resource(jobs_api_configuration, resource_path)
+            generate_dashboard(workflow_monitoring_configuration, SCAFFOLD_PATH, dashboard_path)
+            generate_collector_job_resource(workflow_monitoring_configuration, resource_path)
 
             dashboard_text = dashboard_path.read_text(encoding="utf-8")
             self.assertIn(
@@ -473,11 +473,14 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertEqual(collector_job["schedule"]["pause_status"], "UNPAUSED")
             self.assertEqual(collector_job["max_concurrent_runs"], 1)
             self.assertNotIn("queue", collector_job)
-            collector_parameters = {
-                parameter["name"]: parameter["default"] for parameter in collector_job["parameters"]
-            }
-            self.assertEqual(collector_parameters["monitored_job_ids_json"], "[42]")
-            self.assertEqual(collector_parameters["create_catalog_and_schema_if_missing"], "false")
+            self.assertNotIn("parameters", collector_job)
+            collector_task_parameters = collector_job["tasks"][0]["notebook_task"][
+                "base_parameters"
+            ]
+            self.assertEqual(collector_task_parameters["monitored_job_ids_json"], "[42]")
+            self.assertEqual(
+                collector_task_parameters["create_catalog_and_schema_if_missing"], "false"
+            )
             self.assertEqual(collector_job["tasks"][1]["run_if"], "ALL_DONE")
             self.assertEqual(
                 collector_job["tasks"][1]["dashboard_task"]["dashboard_id"],
@@ -487,7 +490,7 @@ class DashboardGenerationTests(unittest.TestCase):
     def test_zero_active_workflows_pause_collector(self) -> None:
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
-            jobs_api=AUTOMATIC_JOBS_API_STORAGE,
+            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
             active_workflows=(),
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -497,11 +500,14 @@ class DashboardGenerationTests(unittest.TestCase):
                 "jobs"
             ]["workflow_monitoring_jobs_api_collector"]
             self.assertEqual(collector_job["schedule"]["pause_status"], "PAUSED")
-            collector_parameters = {
-                parameter["name"]: parameter["default"] for parameter in collector_job["parameters"]
-            }
-            self.assertEqual(collector_parameters["monitored_job_ids_json"], "[]")
-            self.assertEqual(collector_parameters["create_catalog_and_schema_if_missing"], "true")
+            self.assertNotIn("parameters", collector_job)
+            collector_task_parameters = collector_job["tasks"][0]["notebook_task"][
+                "base_parameters"
+            ]
+            self.assertEqual(collector_task_parameters["monitored_job_ids_json"], "[]")
+            self.assertEqual(
+                collector_task_parameters["create_catalog_and_schema_if_missing"], "true"
+            )
 
 
 class DashboardScaffoldTests(unittest.TestCase):
@@ -574,7 +580,7 @@ class DashboardScaffoldTests(unittest.TestCase):
         required_sql_fragments = (
             "to_utc_timestamp",
             "LEAST(day_of_month, day(last_day(add_months(local_today, offset))))",
-            "'FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED'",
+            "'SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED'",
             "late_recoveries AS",
             "run_metrics_30d AS",
             "{{COLLECTED_RUNS_TABLE}}",
@@ -582,6 +588,10 @@ class DashboardScaffoldTests(unittest.TestCase):
         for required_sql_fragment in required_sql_fragments:
             self.assertIn(required_sql_fragment, scaffold_text)
         self.assertNotIn("system.", scaffold_text)
+        self.assertNotIn("date_sub(current_date(), 365)", scaffold_text)
+        self.assertNotIn("date_sub(local_today, 380)", scaffold_text)
+        for stale_terminal_state in ("'ERROR'", "'TIMED_OUT'", "'BLOCKED'"):
+            self.assertNotIn(stale_terminal_state, scaffold_text)
         self.assertNotIn("),\nSELECT", scaffold_text)
 
         for visualization_marker in CUSTOM_VISUALIZATION_FILES:
@@ -798,11 +808,29 @@ class JobsApiCollectorTests(unittest.TestCase):
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
 
     def test_nonterminal_run_reconciliation_is_scoped(self) -> None:
+        api_retention_start_at = datetime(2026, 6, 26)
+
+        def run_state_row(
+            workspace_id: str,
+            job_id: str,
+            run_id: int,
+            result_state: str,
+            period_start_time: datetime = datetime(2026, 8, 24),
+        ) -> SimpleNamespace:
+            return SimpleNamespace(
+                workspace_id=workspace_id,
+                job_id=job_id,
+                run_id=run_id,
+                period_start_time=period_start_time,
+                result_state=result_state,
+            )
+
         run_state_rows = [
-            SimpleNamespace(workspace_id="111", job_id="42", run_id=900, result_state="RUNNING"),
-            SimpleNamespace(workspace_id="111", job_id="43", run_id=901, result_state="SUCCEEDED"),
-            SimpleNamespace(workspace_id="222", job_id="42", run_id=902, result_state="RUNNING"),
-            SimpleNamespace(workspace_id="111", job_id="99", run_id=903, result_state="RUNNING"),
+            run_state_row("111", "42", 900, "RUNNING"),
+            run_state_row("111", "43", 901, "SUCCEEDED"),
+            run_state_row("222", "42", 902, "RUNNING"),
+            run_state_row("111", "99", 903, "RUNNING"),
+            run_state_row("111", "42", 904, "RUNNING", datetime(2026, 6, 25)),
         ]
 
         class RunStateDataFrame:
@@ -826,6 +854,13 @@ class JobsApiCollectorTests(unittest.TestCase):
                     self.rows = [
                         row for row in self.rows if row.result_state not in terminal_states
                     ]
+                elif predicate.startswith("period_start_time >= TIMESTAMP"):
+                    selected_retention_start_at = datetime.fromisoformat(predicate.split("'")[1])
+                    self.rows = [
+                        row
+                        for row in self.rows
+                        if row.period_start_time >= selected_retention_start_at
+                    ]
                 return self
 
             def collect(self) -> list[SimpleNamespace]:
@@ -840,6 +875,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             "jobs",
             "111",
             [42, 43],
+            api_retention_start_at,
         )
         self.assertEqual(nonterminal_runs, {42: {900}})
 

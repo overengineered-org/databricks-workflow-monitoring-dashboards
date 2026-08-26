@@ -12,7 +12,7 @@
         "workflow_runs AS (\n",
         "  SELECT r.configured_order, r.workspace_id, r.job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
         "  FROM monitored_workflows r INNER JOIN `workflow_monitoring`.`lakeflow_jobs`.`workflow_run_api_state` t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id\n",
-        "  WHERE t.period_start_time >= date_sub(current_date(), 365)\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 60)\n",
         "  GROUP BY r.configured_order, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IS NOT NULL\n",
         "),\n",
         "latest_runs AS (\n",
@@ -22,7 +22,7 @@
         "today_counts AS (\n",
         "  SELECT configured_order,\n",
         "    COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_today,\n",
-        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_today\n",
+        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_today\n",
         "  FROM workflow_runs\n",
         "  WHERE to_date(from_utc_timestamp(run_end_time, 'UTC')) = to_date(from_utc_timestamp(current_timestamp(), 'UTC'))\n",
         "  GROUP BY configured_order\n",
@@ -97,8 +97,8 @@
         "monitored_runs AS (\n",
         "  SELECT r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
         "  FROM monitored_workflows r INNER JOIN `workflow_monitoring`.`lakeflow_jobs`.`workflow_run_api_state` t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id\n",
-        "  WHERE t.period_start_time >= date_sub(current_date(), 365)\n",
-        "  GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED')\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 60)\n",
+        "  GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')\n",
         ")\n",
         "SELECT r.workflow_name, r.job_id, r.run_id, to_date(from_utc_timestamp(r.run_end_time, 'UTC')) AS run_date, r.run_start_time, r.run_end_time,\n",
         "  unix_timestamp(r.run_end_time) - unix_timestamp(r.run_start_time) AS duration_seconds, r.result_state,\n",
@@ -136,8 +136,8 @@
         "workflow_runs AS (\n",
         "  SELECT r.configured_order, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
         "  FROM monitored_workflows r INNER JOIN `workflow_monitoring`.`lakeflow_jobs`.`workflow_run_api_state` t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id\n",
-        "  WHERE t.period_start_time >= date_sub(current_date(), 380)\n",
-        "  GROUP BY r.configured_order, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED')\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 61)\n",
+        "  GROUP BY r.configured_order, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')\n",
         "),\n",
         "workflow_local_dates AS (\n",
         "  SELECT r.*, to_date(from_utc_timestamp(current_timestamp(), timezone)) AS local_today,\n",
@@ -146,17 +146,17 @@
         "),\n",
         "-- Generate historical deadlines in each workflow's local timezone.\n",
         "deadline_dates AS (\n",
-        "  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 380), date_add(local_today, 1))) d AS deadline_date WHERE frequency = 'daily'\n",
+        "  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 61), date_add(local_today, 31))) d AS deadline_date WHERE frequency = 'daily'\n",
         "  UNION ALL\n",
-        "  SELECT w.*, date_add(date_add(date_sub(local_today, 380), pmod(target_day - dayofweek(date_sub(local_today, 380)), 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(0, 56)) o AS offset WHERE frequency = 'weekly'\n",
+        "  SELECT w.*, date_add(date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(0, 14)) o AS offset WHERE frequency = 'weekly'\n",
         "  UNION ALL\n",
-        "  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-28, 1)) o AS offset WHERE frequency = 'fortnightly'\n",
+        "  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-5, 3)) o AS offset WHERE frequency = 'fortnightly'\n",
         "  UNION ALL\n",
-        "  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-13, 1)) o AS offset WHERE frequency = 'monthly'\n",
+        "  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-3, 2)) o AS offset WHERE frequency = 'monthly'\n",
         "),\n",
         "deadline_instants AS (\n",
         "  SELECT *, to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), timezone) AS deadline_utc\n",
-        "  FROM deadline_dates WHERE deadline_date BETWEEN date_sub(local_today, 380) AND date_add(local_today, 31)\n",
+        "  FROM deadline_dates WHERE deadline_date BETWEEN date_sub(local_today, 61) AND date_add(local_today, 31)\n",
         "),\n",
         "deadline_periods AS (\n",
         "  SELECT *,\n",
@@ -196,7 +196,7 @@
         "run_metrics_30d AS (\n",
         "  SELECT configured_order, COUNT(DISTINCT run_id) AS total_runs_30d,\n",
         "    COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_30d,\n",
-        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'ERROR', 'TIMED_OUT', 'BLOCKED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_30d,\n",
+        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_30d,\n",
         "    AVG(unix_timestamp(run_end_time) - unix_timestamp(run_start_time)) AS average_duration_seconds_30d\n",
         "  FROM workflow_runs WHERE run_end_time >= date_sub(current_date(), 30) GROUP BY configured_order\n",
         "),\n",
@@ -223,7 +223,7 @@
         "FROM deadline_results d\n",
         "LEFT JOIN run_metrics_30d r ON d.configured_order = r.configured_order\n",
         "LEFT JOIN sla_metrics_30d s ON d.configured_order = s.configured_order\n",
-        "WHERE d.deadline_utc >= date_sub(current_date(), 365)\n",
+        "WHERE d.deadline_utc >= date_sub(current_date(), 60)\n",
         "ORDER BY d.deadline_utc"
       ],
       "columns": [
@@ -760,7 +760,7 @@
               "widgetType": "custom-vega-viz",
               "jsonSpec": {
                 "type": "vega-lite",
-                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Shows each workflow deadline as a semantic SLA status cell.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.deadline_day_offset >= -89 && datum.deadline_day_offset <= 31\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"rect\",\"cornerRadius\":4,\"opacity\":0.9},\"encoding\":{\"x\":{\"field\":\"deadline_date\",\"type\":\"temporal\",\"title\":\"Deadline date\",\"axis\":{\"format\":\"%d %b\",\"labelAngle\":-45}},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"sla_status\",\"type\":\"nominal\",\"title\":\"SLA\",\"scale\":{\"domain\":[\"Met\",\"Pending\",\"Missed\"],\"range\":[\"#009E73\",\"#E69F00\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"deadline_utc\",\"type\":\"temporal\",\"title\":\"Deadline (UTC)\"},{\"field\":\"observed_completion_utc\",\"type\":\"temporal\",\"title\":\"Observed completion\"},{\"field\":\"completion_margin_minutes\",\"type\":\"quantitative\",\"title\":\"Minutes early (+) or late (-)\",\"format\":\".1f\"},{\"field\":\"sla_status\",\"type\":\"nominal\",\"title\":\"SLA status\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Shows each workflow deadline as a semantic SLA status cell.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.deadline_day_offset >= -59 && datum.deadline_day_offset <= 31\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"rect\",\"cornerRadius\":4,\"opacity\":0.9},\"encoding\":{\"x\":{\"field\":\"deadline_date\",\"type\":\"temporal\",\"title\":\"Deadline date\",\"axis\":{\"format\":\"%d %b\",\"labelAngle\":-45}},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"sla_status\",\"type\":\"nominal\",\"title\":\"SLA\",\"scale\":{\"domain\":[\"Met\",\"Pending\",\"Missed\"],\"range\":[\"#009E73\",\"#E69F00\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"deadline_utc\",\"type\":\"temporal\",\"title\":\"Deadline (UTC)\"},{\"field\":\"observed_completion_utc\",\"type\":\"temporal\",\"title\":\"Observed completion\"},{\"field\":\"completion_margin_minutes\",\"type\":\"quantitative\",\"title\":\"Minutes early (+) or late (-)\",\"format\":\".1f\"},{\"field\":\"sla_status\",\"type\":\"nominal\",\"title\":\"SLA status\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
               },
               "encodings": {
                 "fields": [
@@ -794,7 +794,7 @@
                 "showTitle": true,
                 "title": "SLA delivery calendar",
                 "showDescription": true,
-                "description": "Last 90 days plus upcoming deadlines. Select a cell to focus on one workflow."
+                "description": "Last 60 days plus upcoming deadlines. Select a cell to focus on one workflow."
               }
             }
           },

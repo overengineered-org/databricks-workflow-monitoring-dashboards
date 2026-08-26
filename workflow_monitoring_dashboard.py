@@ -22,8 +22,8 @@ DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.jo
 CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
 WORKFLOW_METADATA_MARKER = "{{WORKFLOW_METADATA}}"
 COLLECTED_RUNS_TABLE_MARKER = "{{COLLECTED_RUNS_TABLE}}"
-DEFAULT_JOBS_API_CATALOG = "workflow_monitoring"
-DEFAULT_JOBS_API_SCHEMA = "lakeflow_jobs"
+AUTOMATIC_STORAGE_CATALOG = "workflow_monitoring"
+AUTOMATIC_STORAGE_SCHEMA = "lakeflow_jobs"
 JOBS_API_RUN_STATE_TABLE = "workflow_run_api_state"
 JOBS_API_JOB_STATE_TABLE = "workflow_job_api_state"
 CUSTOM_VISUALIZATION_FILES = {
@@ -57,7 +57,7 @@ class ActiveWorkflow:
 
 
 @dataclass(frozen=True)
-class JobsApiConfiguration:
+class CollectorStorageConfiguration:
     """Governed storage used by the Jobs API collector."""
 
     catalog: str
@@ -71,7 +71,7 @@ class WorkflowMonitoringConfiguration:
 
     workspace_id: str
     active_workflows: tuple[ActiveWorkflow, ...]
-    jobs_api: JobsApiConfiguration
+    collector_storage: CollectorStorageConfiguration
 
 
 def load_workflow_monitoring_configuration(
@@ -87,17 +87,17 @@ def load_workflow_monitoring_configuration(
     _validate_configuration_schema(configuration_document, schema_path)
 
     workspace_id = configuration_document["workspace_id"]
-    jobs_api_document = configuration_document.get("jobs_api_config")
-    if jobs_api_document is None:
-        jobs_api_configuration = JobsApiConfiguration(
-            catalog=DEFAULT_JOBS_API_CATALOG,
-            schema=DEFAULT_JOBS_API_SCHEMA,
+    collector_storage_document = configuration_document.get("jobs_api_config")
+    if collector_storage_document is None:
+        collector_storage = CollectorStorageConfiguration(
+            catalog=AUTOMATIC_STORAGE_CATALOG,
+            schema=AUTOMATIC_STORAGE_SCHEMA,
             create_catalog_and_schema_if_missing=True,
         )
     else:
-        jobs_api_configuration = JobsApiConfiguration(
-            catalog=jobs_api_document["catalog"],
-            schema=jobs_api_document["schema"],
+        collector_storage = CollectorStorageConfiguration(
+            catalog=collector_storage_document["catalog"],
+            schema=collector_storage_document["schema"],
             create_catalog_and_schema_if_missing=False,
         )
     default_timezone = configuration_document["default_timezone"]
@@ -120,7 +120,7 @@ def load_workflow_monitoring_configuration(
     return WorkflowMonitoringConfiguration(
         workspace_id=workspace_id,
         active_workflows=tuple(active_workflows),
-        jobs_api=jobs_api_configuration,
+        collector_storage=collector_storage,
     )
 
 
@@ -296,32 +296,22 @@ def generate_collector_job_resource(
                             "UNPAUSED" if configuration.active_workflows else "PAUSED"
                         ),
                     },
-                    "parameters": [
-                        {
-                            "name": "catalog_name",
-                            "default": configuration.jobs_api.catalog,
-                        },
-                        {
-                            "name": "schema_name",
-                            "default": configuration.jobs_api.schema,
-                        },
-                        {
-                            "name": "create_catalog_and_schema_if_missing",
-                            "default": str(
-                                configuration.jobs_api.create_catalog_and_schema_if_missing
-                            ).lower(),
-                        },
-                        {"name": "workspace_id", "default": configuration.workspace_id},
-                        {
-                            "name": "monitored_job_ids_json",
-                            "default": json.dumps(monitored_job_ids, separators=(",", ":")),
-                        },
-                    ],
                     "tasks": [
                         {
                             "task_key": "collect_jobs_api_state",
                             "notebook_task": {
-                                "notebook_path": "../src/collect_workflow_monitoring_jobs_api.py"
+                                "notebook_path": "../src/collect_workflow_monitoring_jobs_api.py",
+                                "base_parameters": {
+                                    "catalog_name": configuration.collector_storage.catalog,
+                                    "schema_name": configuration.collector_storage.schema,
+                                    "create_catalog_and_schema_if_missing": str(
+                                        configuration.collector_storage.create_catalog_and_schema_if_missing
+                                    ).lower(),
+                                    "workspace_id": configuration.workspace_id,
+                                    "monitored_job_ids_json": json.dumps(
+                                        monitored_job_ids, separators=(",", ":")
+                                    ),
+                                },
                             },
                             "timeout_seconds": 240,
                             "max_retries": 2,
@@ -383,7 +373,10 @@ def _qualified_collector_table(
     configuration: WorkflowMonitoringConfiguration,
     table_name: str,
 ) -> str:
-    return f"`{configuration.jobs_api.catalog}`.`{configuration.jobs_api.schema}`.`{table_name}`"
+    return (
+        f"`{configuration.collector_storage.catalog}`."
+        f"`{configuration.collector_storage.schema}`.`{table_name}`"
+    )
 
 
 def _render_configured_workflows_sql(configuration: WorkflowMonitoringConfiguration) -> str:

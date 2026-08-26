@@ -60,7 +60,7 @@ uv run python workflow_monitoring_dashboard.py generate
 The product has one Jobs API path. Every workflow requires a Job ID and SLA. Job names come
 from the Jobs API. Generation always creates the fixed five-minute collector resource. Omitting
 `jobs_api_config` enables automatic default storage creation. Providing it selects an existing
-catalog and schema that the collector must not create.
+catalog and schema, so the generated collector skips catalog and schema DDL.
 
 ## Validate your change
 

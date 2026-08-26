@@ -292,6 +292,7 @@ def _nonterminal_run_ids_by_job(
     schema_name: str,
     workspace_id: str,
     monitored_job_ids: list[int],
+    api_retention_start_at: datetime,
 ) -> dict[int, set[int]]:
     if not monitored_job_ids:
         return {}
@@ -303,11 +304,13 @@ def _nonterminal_run_ids_by_job(
     )
     monitored_job_id_sql = ", ".join(f"'{job_id}'" for job_id in monitored_job_ids)
     terminal_state_sql = ", ".join(f"'{run_state}'" for run_state in sorted(TERMINAL_RUN_STATES))
+    api_retention_start_sql = api_retention_start_at.isoformat(sep=" ")
     nonterminal_run_rows = (
         spark_session.table(run_state_table)
-        .select("job_id", "run_id")
+        .select("job_id", "run_id", "period_start_time")
         .where(f"workspace_id = '{workspace_id}'")
         .where(f"job_id IN ({monitored_job_id_sql})")
+        .where(f"period_start_time >= TIMESTAMP '{api_retention_start_sql}'")
         .where(f"result_state NOT IN ({terminal_state_sql})")
         .collect()
     )
@@ -365,6 +368,7 @@ def main() -> None:
         schema_name,
         workspace_id,
         monitored_job_ids,
+        retention_start_at,
     )
     collected_run_rows: list[dict[str, Any]] = []
     job_state_rows: list[dict[str, Any]] = []

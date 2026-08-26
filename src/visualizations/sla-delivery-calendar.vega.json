@@ -8,7 +8,7 @@
   },
   "transform": [
     {
-      "filter": "datum.deadline_day_offset >= -89 && datum.deadline_day_offset <= 31"
+      "filter": "datum.deadline_day_offset >= -59 && datum.deadline_day_offset <= 31"
     }
   ],
   "params": [
