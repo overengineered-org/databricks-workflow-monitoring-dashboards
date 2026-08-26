@@ -6,22 +6,44 @@ It contains no workspace URL, workspace ID, job ID, user name, profile name, or 
 
 ## Deploy
 
-Choose a Databricks CLI profile, then run:
+From the repository root, choose a Databricks CLI profile and run:
 
 ```sh
 cd examples/fast-logistics
-databricks bundle validate --profile <profile>
-databricks bundle deploy --profile <profile>
+databricks bundle validate --strict -t dev --profile <profile>
+databricks bundle deploy -t dev --profile <profile>
+databricks bundle summary -t dev --profile <profile>
 ```
 
-Run any job manually from the bundle output. The `recovery` job intentionally fails when `run_mode` is `scheduled`; rerun it with `run_mode=retry` to model recovery. All jobs use serverless compute and have a 60-second timeout.
+Deployment creates four jobs with paused schedules. It does not start compute.
+
+## Run
+
+Trigger only the scenario you need:
+
+```sh
+databricks bundle run fast_logistics_on_time \
+  -t dev --profile <profile>
+```
+
+The recovery scenario fails first, then succeeds when retried:
+
+```sh
+databricks bundle run fast_logistics_recovery \
+  -t dev --profile <profile> --params run_mode=scheduled
+
+databricks bundle run fast_logistics_recovery \
+  -t dev --profile <profile> --params run_mode=retry
+```
+
+All jobs use serverless compute and have a 60-second timeout.
 
 ## Remove
 
 When finished, remove the disposable resources:
 
 ```sh
-databricks bundle destroy --auto-approve --profile <profile>
+databricks bundle destroy --auto-approve -t dev --profile <profile>
 ```
 
-To monitor these jobs, copy `workflow-monitoring.template.yml`, then add the job names and IDs returned by the deployment. Validate and generate from the repository root.
+To monitor these jobs, use the names and IDs shown by `bundle summary` in the root `workflow-monitoring.yml`, then generate and deploy the monitoring bundle separately.

@@ -271,7 +271,7 @@ The public template and generated dashboard use fake values. Local adopter confi
 | Dashboard shows collection pending | Run the collector once, then confirm its Job ID list. |
 | Dashboard shows stale data | Check collector schedule, latest run, and run identity. |
 
-The [`examples/fast-logistics`](examples/fast-logistics/README.md) bundle creates paused disposable jobs for testing dashboard shapes.
+The [`examples/fast-logistics`](examples/fast-logistics/README.md) bundle has exact commands to deploy, run, inspect, and remove paused disposable test jobs.
 
 Official references: [AI/BI dashboards](https://docs.databricks.com/aws/en/dashboards/), [Lakeflow Jobs API 2.2](https://docs.databricks.com/aws/en/reference/jobs-api-2-2-updates), and [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles/).
 
