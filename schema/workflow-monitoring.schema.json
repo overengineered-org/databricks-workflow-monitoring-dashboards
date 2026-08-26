@@ -10,7 +10,7 @@
     "version": { "const": 2, "description": "Configuration format version." },
     "jobs_api_config": {
       "$ref": "#/$defs/jobs_api_config",
-      "description": "Optional governed storage override for the Jobs API collector."
+      "description": "Selects an existing Unity Catalog catalog and schema. When omitted, the collector creates workflow_monitoring.lakeflow_jobs."
     },
     "workspace_id": {
       "type": "string",
@@ -32,16 +32,15 @@
     "jobs_api_config": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["catalog", "schema"],
       "properties": {
         "catalog": {
           "$ref": "#/$defs/unity_catalog_identifier",
-          "default": "workflow_monitoring",
-          "description": "Unity Catalog catalog for collector tables."
+          "description": "Existing Unity Catalog catalog for collector tables."
         },
         "schema": {
           "$ref": "#/$defs/unity_catalog_identifier",
-          "default": "lakeflow_jobs",
-          "description": "Unity Catalog schema for collector tables."
+          "description": "Existing Unity Catalog schema for collector tables."
         }
       }
     },

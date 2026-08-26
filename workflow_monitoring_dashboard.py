@@ -62,6 +62,7 @@ class JobsApiConfiguration:
 
     catalog: str
     schema: str
+    create_catalog_and_schema_if_missing: bool
 
 
 @dataclass(frozen=True)
@@ -86,11 +87,19 @@ def load_workflow_monitoring_configuration(
     _validate_configuration_schema(configuration_document, schema_path)
 
     workspace_id = configuration_document["workspace_id"]
-    jobs_api_document = configuration_document.get("jobs_api_config", {})
-    jobs_api_configuration = JobsApiConfiguration(
-        catalog=jobs_api_document.get("catalog", DEFAULT_JOBS_API_CATALOG),
-        schema=jobs_api_document.get("schema", DEFAULT_JOBS_API_SCHEMA),
-    )
+    jobs_api_document = configuration_document.get("jobs_api_config")
+    if jobs_api_document is None:
+        jobs_api_configuration = JobsApiConfiguration(
+            catalog=DEFAULT_JOBS_API_CATALOG,
+            schema=DEFAULT_JOBS_API_SCHEMA,
+            create_catalog_and_schema_if_missing=True,
+        )
+    else:
+        jobs_api_configuration = JobsApiConfiguration(
+            catalog=jobs_api_document["catalog"],
+            schema=jobs_api_document["schema"],
+            create_catalog_and_schema_if_missing=False,
+        )
     default_timezone = configuration_document["default_timezone"]
     _validate_iana_timezone("default_timezone", default_timezone)
 
@@ -295,6 +304,12 @@ def generate_collector_job_resource(
                         {
                             "name": "schema_name",
                             "default": configuration.jobs_api.schema,
+                        },
+                        {
+                            "name": "create_catalog_and_schema_if_missing",
+                            "default": str(
+                                configuration.jobs_api.create_catalog_and_schema_if_missing
+                            ).lower(),
                         },
                         {"name": "workspace_id", "default": configuration.workspace_id},
                         {

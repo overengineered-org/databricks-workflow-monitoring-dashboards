@@ -62,6 +62,7 @@ non-secret workspace and Job IDs. Upstream keeps fake values only.
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
 
 version: 2
+# Keep this block to use an existing catalog and schema.
 jobs_api_config:
   catalog: workflow_monitoring
   schema: lakeflow_jobs
@@ -77,7 +78,15 @@ workflows:
       timezone: Australia/Melbourne
 ```
 
-`jobs_api_config` is optional. Omit it to use `workflow_monitoring.lakeflow_jobs`.
+Choose one storage mode:
+
+| Mode | Configuration | Catalog and schema behavior |
+| --- | --- | --- |
+| Bring your own | Set both `jobs_api_config.catalog` and `jobs_api_config.schema` | Uses the existing catalog and schema. Never creates them. |
+| Automatic | Omit the entire `jobs_api_config` block | Creates `workflow_monitoring.lakeflow_jobs` if missing. |
+
+In both modes, the collector creates its two Delta tables if missing. A partial
+`jobs_api_config` block is invalid.
 
 Every workflow entry requires:
 
@@ -118,7 +127,8 @@ databricks bundle run workflow_monitoring_jobs_api_collector \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-The first successful run creates the configured catalog, schema, and tables when the run identity has permission. The generated schedule stays paused when no workflows are active.
+The first successful run prepares storage according to the selected mode and creates the two
+collector tables. The generated schedule stays paused when no workflows are active.
 
 ## What the dashboard answers
 
@@ -193,9 +203,10 @@ The collector runs as the bundle deployer unless the adopter adds bundle `run_as
 Required identity access:
 
 1. Read configured Jobs and runs.
-2. Create or use the configured catalog and schema.
-3. Create, read, and modify the two tables.
-4. Refresh the dashboard and use its SQL warehouse.
+2. Automatic mode: create the default catalog and schema.
+3. Bring-your-own mode: `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE` on the selected schema.
+4. Read and modify the two collector tables.
+5. Refresh the dashboard and use its SQL warehouse.
 
 ## Bundle settings
 
@@ -269,7 +280,8 @@ The public configuration and generated deployment files use fake values. Adopter
 | Problem | Fix |
 | --- | --- |
 | Workflow fails schema validation | Add a positive `job_id` and complete SLA fields. |
-| Collector cannot create storage | Grant Unity Catalog privileges or configure existing governed storage. |
+| Automatic storage setup fails | Grant catalog and schema creation rights, or configure existing storage. |
+| Bring-your-own storage fails | Confirm both objects exist and grant `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE`. |
 | `Jobs API collection failed` | Read the sanitized error in `workflow_job_api_state`. |
 | Dashboard shows collection pending | Run the collector once, then confirm its Job ID list. |
 | Dashboard shows stale data | Check collector schedule, latest run, and run identity. |

@@ -3,7 +3,8 @@
 # Track this file in adopter repositories. Replace only the fake account values.
 version: 2
 
-# Omit this block to use workflow_monitoring.lakeflow_jobs.
+# Bring your own existing catalog and schema. Remove this entire block to let the
+# collector create workflow_monitoring.lakeflow_jobs instead.
 jobs_api_config:
   catalog: workflow_monitoring
   schema: lakeflow_jobs

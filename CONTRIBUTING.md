@@ -57,7 +57,10 @@ uv run python workflow_monitoring_dashboard.py generate
 
 `workflow-monitoring.yml` and both generated deployment files are tracked and must contain fake values upstream. `.databricks/` remains ignored.
 
-The product has one Jobs API path. Every workflow requires a Job ID and SLA. Job names come from the Jobs API. Generation always creates the fixed five-minute collector resource.
+The product has one Jobs API path. Every workflow requires a Job ID and SLA. Job names come
+from the Jobs API. Generation always creates the fixed five-minute collector resource. Omitting
+`jobs_api_config` enables automatic default storage creation. Providing it selects an existing
+catalog and schema that the collector must not create.
 
 ## Validate your change
 

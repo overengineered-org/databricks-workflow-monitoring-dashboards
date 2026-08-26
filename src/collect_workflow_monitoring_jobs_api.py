@@ -137,20 +137,24 @@ def _job_name_from_job_details(job_id: int, job_details: Any) -> str:
     return job_name
 
 
-def _create_governed_storage(
+def _prepare_collector_storage(
     spark_session: Any,
     catalog_name: str,
     schema_name: str,
+    create_catalog_and_schema_if_missing: bool,
 ) -> None:
-    qualified_schema_name = f"{_quoted_identifier(catalog_name)}.{_quoted_identifier(schema_name)}"
-    spark_session.sql(
-        f"CREATE CATALOG IF NOT EXISTS {_quoted_identifier(catalog_name)} "
-        "COMMENT 'Governed workflow monitoring data'"
-    )
-    spark_session.sql(
-        f"CREATE SCHEMA IF NOT EXISTS {qualified_schema_name} "
-        "COMMENT 'Lakeflow Jobs API monitoring state'"
-    )
+    if create_catalog_and_schema_if_missing:
+        qualified_schema_name = (
+            f"{_quoted_identifier(catalog_name)}.{_quoted_identifier(schema_name)}"
+        )
+        spark_session.sql(
+            f"CREATE CATALOG IF NOT EXISTS {_quoted_identifier(catalog_name)} "
+            "COMMENT 'Governed workflow monitoring data'"
+        )
+        spark_session.sql(
+            f"CREATE SCHEMA IF NOT EXISTS {qualified_schema_name} "
+            "COMMENT 'Lakeflow Jobs API monitoring state'"
+        )
     spark_session.sql(
         f"""
         CREATE TABLE IF NOT EXISTS {_qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME)} (
@@ -326,6 +330,12 @@ def main() -> None:
     schema_name = _validated_unity_catalog_identifier(
         "schema_name", notebook_utilities.widgets.get("schema_name")
     )
+    create_catalog_and_schema_if_missing_value = notebook_utilities.widgets.get(
+        "create_catalog_and_schema_if_missing"
+    )
+    if create_catalog_and_schema_if_missing_value not in {"true", "false"}:
+        raise ValueError("create_catalog_and_schema_if_missing must be true or false")
+    create_catalog_and_schema_if_missing = create_catalog_and_schema_if_missing_value == "true"
     workspace_id = _validated_workspace_id(notebook_utilities.widgets.get("workspace_id"))
     monitored_job_ids = json.loads(notebook_utilities.widgets.get("monitored_job_ids_json"))
     if not isinstance(monitored_job_ids, list) or any(
@@ -334,7 +344,12 @@ def main() -> None:
     ):
         raise ValueError("monitored_job_ids_json must contain positive integer job IDs")
 
-    _create_governed_storage(spark_session, catalog_name, schema_name)
+    _prepare_collector_storage(
+        spark_session,
+        catalog_name,
+        schema_name,
+        create_catalog_and_schema_if_missing,
+    )
     jobs_api_client = WorkspaceClient()
     collection_attempt_at = datetime.now(UTC).replace(tzinfo=None)
     retention_start_at = collection_attempt_at - timedelta(days=JOBS_API_RETENTION_DAYS)

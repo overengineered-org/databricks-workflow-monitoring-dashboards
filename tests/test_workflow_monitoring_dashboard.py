@@ -20,6 +20,7 @@ from src.collect_workflow_monitoring_jobs_api import (
     _last_successful_collection_by_workspace_and_job,
     _nonterminal_run_ids_by_job,
     _normalized_run_state,
+    _prepare_collector_storage,
 )
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
@@ -38,9 +39,10 @@ SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.l
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
-DEFAULT_JOBS_API = JobsApiConfiguration(
+AUTOMATIC_JOBS_API_STORAGE = JobsApiConfiguration(
     catalog="workflow_monitoring",
     schema="lakeflow_jobs",
+    create_catalog_and_schema_if_missing=True,
 )
 
 
@@ -173,7 +175,7 @@ class ConfigurationTests(unittest.TestCase):
                         expected_workflow_count,
                     )
 
-    def test_jobs_api_configuration_and_job_id_are_explicit(self) -> None:
+    def test_jobs_api_storage_modes_and_job_id_are_explicit(self) -> None:
         configuration_cases = (
             (
                 "every workflow requires job ID",
@@ -199,7 +201,7 @@ class ConfigurationTests(unittest.TestCase):
                     monitoring_status: active
                     sla: {frequency: daily, completion_time: "06:00"}
                 """,
-                ("workflow_monitoring", "lakeflow_jobs"),
+                ("workflow_monitoring", "lakeflow_jobs", True),
                 None,
             ),
             (
@@ -218,7 +220,7 @@ class ConfigurationTests(unittest.TestCase):
                 "Additional properties are not allowed.*job_name",
             ),
             (
-                "collector storage override",
+                "bring your own collector storage",
                 """
                 version: 2
                 jobs_api_config:
@@ -228,8 +230,21 @@ class ConfigurationTests(unittest.TestCase):
                 default_timezone: UTC
                 workflows: []
                 """,
-                ("monitoring_catalog", "monitoring_schema"),
+                ("monitoring_catalog", "monitoring_schema", False),
                 None,
+            ),
+            (
+                "bring your own storage requires both names",
+                """
+                version: 2
+                jobs_api_config:
+                  catalog: monitoring_catalog
+                workspace_id: "123456789"
+                default_timezone: UTC
+                workflows: []
+                """,
+                None,
+                "'schema' is a required property",
             ),
         )
 
@@ -250,7 +265,11 @@ class ConfigurationTests(unittest.TestCase):
                     SCHEMA_PATH,
                 )
                 self.assertEqual(
-                    (configuration.jobs_api.catalog, configuration.jobs_api.schema),
+                    (
+                        configuration.jobs_api.catalog,
+                        configuration.jobs_api.schema,
+                        configuration.jobs_api.create_catalog_and_schema_if_missing,
+                    ),
                     expected_storage,
                 )
 
@@ -265,7 +284,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "active workflow",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
-                    jobs_api=DEFAULT_JOBS_API,
+                    jobs_api=AUTOMATIC_JOBS_API_STORAGE,
                     active_workflows=(
                         ActiveWorkflow(
                             job_id=42,
@@ -284,7 +303,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "zero active workflows",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
-                    jobs_api=DEFAULT_JOBS_API,
+                    jobs_api=AUTOMATIC_JOBS_API_STORAGE,
                     active_workflows=(),
                 ),
                 ("WHERE false", "CAST(NULL AS STRING) AS configured_job_id"),
@@ -333,7 +352,7 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            jobs_api=DEFAULT_JOBS_API,
+            jobs_api=AUTOMATIC_JOBS_API_STORAGE,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -350,7 +369,7 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            jobs_api=DEFAULT_JOBS_API,
+            jobs_api=AUTOMATIC_JOBS_API_STORAGE,
         )
         expected_visualizations = {
             "sla-delivery-calendar": "sla-delivery-calendar.vega.json",
@@ -413,6 +432,7 @@ class DashboardGenerationTests(unittest.TestCase):
             jobs_api=JobsApiConfiguration(
                 catalog="monitoring_catalog",
                 schema="monitoring_schema",
+                create_catalog_and_schema_if_missing=False,
             ),
             active_workflows=(
                 ActiveWorkflow(
@@ -457,6 +477,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 parameter["name"]: parameter["default"] for parameter in collector_job["parameters"]
             }
             self.assertEqual(collector_parameters["monitored_job_ids_json"], "[42]")
+            self.assertEqual(collector_parameters["create_catalog_and_schema_if_missing"], "false")
             self.assertEqual(collector_job["tasks"][1]["run_if"], "ALL_DONE")
             self.assertEqual(
                 collector_job["tasks"][1]["dashboard_task"]["dashboard_id"],
@@ -466,7 +487,7 @@ class DashboardGenerationTests(unittest.TestCase):
     def test_zero_active_workflows_pause_collector(self) -> None:
         configuration = WorkflowMonitoringConfiguration(
             workspace_id="123456789",
-            jobs_api=DEFAULT_JOBS_API,
+            jobs_api=AUTOMATIC_JOBS_API_STORAGE,
             active_workflows=(),
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -480,6 +501,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 parameter["name"]: parameter["default"] for parameter in collector_job["parameters"]
             }
             self.assertEqual(collector_parameters["monitored_job_ids_json"], "[]")
+            self.assertEqual(collector_parameters["create_catalog_and_schema_if_missing"], "true")
 
 
 class DashboardScaffoldTests(unittest.TestCase):
@@ -624,6 +646,38 @@ class DashboardScaffoldTests(unittest.TestCase):
 
 class JobsApiCollectorTests(unittest.TestCase):
     """Protect the collector's durable storage and polling guarantees."""
+
+    def test_storage_creation_respects_selected_mode(self) -> None:
+        class RecordingSparkSession:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def sql(self, statement: str) -> None:
+                self.statements.append(statement)
+
+        bring_your_own_spark_session = RecordingSparkSession()
+        _prepare_collector_storage(
+            bring_your_own_spark_session,
+            "existing_catalog",
+            "existing_schema",
+            False,
+        )
+        bring_your_own_sql = "\n".join(bring_your_own_spark_session.statements)
+        self.assertNotIn("CREATE CATALOG", bring_your_own_sql)
+        self.assertNotIn("CREATE SCHEMA", bring_your_own_sql)
+        self.assertEqual(bring_your_own_sql.count("CREATE TABLE IF NOT EXISTS"), 2)
+
+        automatic_spark_session = RecordingSparkSession()
+        _prepare_collector_storage(
+            automatic_spark_session,
+            "workflow_monitoring",
+            "lakeflow_jobs",
+            True,
+        )
+        automatic_sql = "\n".join(automatic_spark_session.statements)
+        self.assertIn("CREATE CATALOG IF NOT EXISTS", automatic_sql)
+        self.assertIn("CREATE SCHEMA IF NOT EXISTS", automatic_sql)
+        self.assertEqual(automatic_sql.count("CREATE TABLE IF NOT EXISTS"), 2)
 
     def test_collector_source_is_valid_and_idempotent(self) -> None:
         collector_source = JOBS_API_COLLECTOR_PATH.read_text(encoding="utf-8")
