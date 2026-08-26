@@ -45,19 +45,19 @@ Use `feat/`, `fix/`, `docs/`, or `chore/` followed by a short purpose.
 | Dashboard SQL or layout | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Custom Vega-Lite chart | `src/visualizations/*.vega.json` |
 | Generated dashboard | `src/dashboards/workflow-monitoring.lvdash.json` |
+| Generated collector Job | `resources/workflow-monitoring.jobs-api.job.yml` |
 | Bundle deployment | `databricks.yml` or tracked files in `resources/` |
 | User instructions | `README.md` |
 
-Do not edit the generated `.lvdash.json` directly. Change the scaffold, then regenerate it with the public template:
+Do not edit the generated `.lvdash.json` directly. Change the scaffold, then regenerate it with the tracked public configuration:
 
 ```sh
-uv run python workflow_monitoring_dashboard.py generate \
-  --config workflow-monitoring.template.yml
+uv run python workflow_monitoring_dashboard.py generate
 ```
 
-The public template must contain fake values. Local `workflow-monitoring.yml`, `.databricks/`, and the generated Jobs API resource are ignored and must stay out of contributions.
+`workflow-monitoring.yml` and both generated deployment files are tracked and must contain fake values upstream. `.databricks/` remains ignored.
 
-The product has one Jobs API path. Every active workflow must require a job ID, and generation must always create the fixed five-minute collector resource.
+The product has one Jobs API path. Every workflow requires a Job ID and SLA. Job names come from the Jobs API. Generation always creates the fixed five-minute collector resource.
 
 ## Validate your change
 
@@ -67,8 +67,7 @@ Run the fast checks first:
 uv run ruff format --check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
 uv run ruff check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
 uv run python -m unittest discover -s tests -v
-uv run python workflow_monitoring_dashboard.py validate \
-  --config workflow-monitoring.template.yml
+uv run python workflow_monitoring_dashboard.py validate
 for visualization_file in src/visualizations/*.vega.json; do jq empty "$visualization_file"; done
 jq empty src/dashboards/workflow-monitoring.lvdash.json
 ```
@@ -109,7 +108,7 @@ Before requesting review, confirm:
 - names explain their purpose without extra context;
 - comments explain only non-obvious behavior;
 - tests cover changed behavior and important failures;
-- the template and generated dashboard contain fake values only;
+- the tracked configuration and generated dashboard contain fake values only;
 - documentation and schema completion match the implementation.
 
 Keep the implementation small and complete. Do not add compatibility layers, unused extension points, or a second path for an existing capability.

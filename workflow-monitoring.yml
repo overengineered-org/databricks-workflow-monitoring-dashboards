@@ -1,20 +1,20 @@
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
 
-# Copy this template to workflow-monitoring.yml before adding the Lakeflow jobs you monitor.
+# Track this file in adopter repositories. Replace only the fake account values.
 version: 2
 
 # Omit this block to use workflow_monitoring.lakeflow_jobs.
 jobs_api_config:
   catalog: workflow_monitoring
   schema: lakeflow_jobs
+
 # Find this numeric ID with `databricks auth describe --profile <name>`.
 workspace_id: "1234567890123456"
-# A workflow can override this with sla.timezone.
 default_timezone: UTC
 
 workflows:
-  # Keep this example inactive until it is replaced with a real workflow.
-  - job_name: replace-with-your-workflow-name
+  # Job names come from the Jobs API. Replace this ID, then mark it active.
+  - job_id: 123456
     monitoring_status: inactive
     sla:
       frequency: daily

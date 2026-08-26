@@ -20,12 +20,12 @@ DEFAULT_SCAFFOLD_PATH = Path("src/dashboards/workflow-monitoring.scaffold.lvdash
 DEFAULT_DASHBOARD_PATH = Path("src/dashboards/workflow-monitoring.lvdash.json")
 DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.job.yml")
 CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
-WORKFLOW_RESOLUTION_MARKER = "{{WORKFLOW_RESOLUTION}}"
+WORKFLOW_METADATA_MARKER = "{{WORKFLOW_METADATA}}"
 COLLECTED_RUNS_TABLE_MARKER = "{{COLLECTED_RUNS_TABLE}}"
 DEFAULT_JOBS_API_CATALOG = "workflow_monitoring"
 DEFAULT_JOBS_API_SCHEMA = "lakeflow_jobs"
 JOBS_API_RUN_STATE_TABLE = "workflow_run_api_state"
-JOBS_API_COLLECTION_STATUS_TABLE = "workflow_api_collection_status"
+JOBS_API_JOB_STATE_TABLE = "workflow_job_api_state"
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": Path("src/visualizations/sla-delivery-calendar.vega.json"),
     "{{DELIVERY_MARGIN_TIMELINE_VEGA}}": Path(
@@ -52,7 +52,6 @@ class ServiceLevelAgreement:
 class ActiveWorkflow:
     """One workflow included in dashboard queries."""
 
-    job_name: str
     job_id: int
     sla: ServiceLevelAgreement
 
@@ -96,31 +95,18 @@ def load_workflow_monitoring_configuration(
     _validate_iana_timezone("default_timezone", default_timezone)
 
     active_workflows: list[ActiveWorkflow] = []
-    active_job_name_locations: dict[str, int] = {}
-    active_job_id_locations: dict[int, int] = {}
+    job_id_locations: dict[int, int] = {}
     for workflow_index, workflow_document in enumerate(configuration_document["workflows"]):
-        # Inactive entries intentionally skip active-workflow field validation.
-        if workflow_document["monitoring_status"] == "inactive":
-            continue
-
-        active_workflow = _validate_active_workflow(workflow_document, default_timezone)
-        if active_workflow.job_name in active_job_name_locations:
-            previous_index = active_job_name_locations[active_workflow.job_name]
+        configured_workflow = _validate_workflow(workflow_document, default_timezone)
+        if configured_workflow.job_id in job_id_locations:
+            previous_index = job_id_locations[configured_workflow.job_id]
             raise ValueError(
-                f"workflows[{workflow_index}]: job_name duplicates active workflow "
+                f"workflows[{workflow_index}]: job_id duplicates workflow "
                 f"from workflows[{previous_index}]"
             )
-        active_job_name_locations[active_workflow.job_name] = workflow_index
-
-        if active_workflow.job_id is not None:
-            if active_workflow.job_id in active_job_id_locations:
-                previous_index = active_job_id_locations[active_workflow.job_id]
-                raise ValueError(
-                    f"workflows[{workflow_index}]: job_id duplicates active workflow "
-                    f"from workflows[{previous_index}]"
-                )
-            active_job_id_locations[active_workflow.job_id] = workflow_index
-        active_workflows.append(active_workflow)
+        job_id_locations[configured_workflow.job_id] = workflow_index
+        if workflow_document["monitoring_status"] == "active":
+            active_workflows.append(configured_workflow)
 
     return WorkflowMonitoringConfiguration(
         workspace_id=workspace_id,
@@ -168,14 +154,8 @@ def _validate_iana_timezone(field_name: str, timezone_name: str) -> None:
         raise ValueError(f'{field_name} "{timezone_name}" is not an IANA timezone') from error
 
 
-def _validate_active_workflow(
-    workflow_document: dict[str, Any], default_timezone: str
-) -> ActiveWorkflow:
-    """Check active-workflow rules that depend on more than one YAML field."""
-
-    job_name = workflow_document["job_name"].strip()
-    if not job_name:
-        raise ValueError("job_name is required")
+def _validate_workflow(workflow_document: dict[str, Any], default_timezone: str) -> ActiveWorkflow:
+    """Check workflow rules that depend on more than one YAML field."""
 
     sla_document = workflow_document["sla"]
     timezone_name = sla_document.get("timezone") or default_timezone
@@ -184,7 +164,6 @@ def _validate_active_workflow(
     completion_time = sla_document["completion_time"]
     _validate_schedule_fields(sla_document)
     return ActiveWorkflow(
-        job_name=job_name,
         job_id=workflow_document["job_id"],
         sla=ServiceLevelAgreement(
             frequency=sla_document["frequency"],
@@ -250,7 +229,7 @@ def generate_dashboard(
         raise ValueError("dashboard scaffold contains no configured workflow marker")
 
     source_markers = {
-        WORKFLOW_RESOLUTION_MARKER: _render_workflow_resolution_sql(configuration),
+        WORKFLOW_METADATA_MARKER: _render_workflow_metadata_sql(configuration),
         COLLECTED_RUNS_TABLE_MARKER: _qualified_collector_table(
             configuration, JOBS_API_RUN_STATE_TABLE
         ),
@@ -304,7 +283,9 @@ def generate_collector_job_resource(
                     "schedule": {
                         "quartz_cron_expression": "0 0/5 * * * ?",
                         "timezone_id": "UTC",
-                        "pause_status": "UNPAUSED",
+                        "pause_status": (
+                            "UNPAUSED" if configuration.active_workflows else "PAUSED"
+                        ),
                     },
                     "parameters": [
                         {
@@ -353,33 +334,31 @@ def generate_collector_job_resource(
     )
 
 
-def _render_workflow_resolution_sql(
+def _render_workflow_metadata_sql(
     configuration: WorkflowMonitoringConfiguration,
 ) -> str:
-    collection_status_table = _qualified_collector_table(
-        configuration, JOBS_API_COLLECTION_STATUS_TABLE
-    )
+    job_state_table = _qualified_collector_table(configuration, JOBS_API_JOB_STATE_TABLE)
     return "\n".join(
         (
-            "-- Resolve configured job IDs through their collector checkpoints.",
-            "collection_checkpoints AS (",
-            "  SELECT workspace_id, job_id, last_collection_attempt_at,",
+            "-- Join configured job IDs with Jobs API metadata and collection state.",
+            "collected_jobs AS (",
+            "  SELECT workspace_id, job_id, job_name, last_collection_attempt_at,",
             "    last_successful_collection_at, last_error_message",
-            f"  FROM {collection_status_table}",
+            f"  FROM {job_state_table}",
             "  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)",
             "),",
-            "resolved_workflows AS (",
-            "  SELECT c.*, c.configured_job_id AS resolved_job_id,",
-            "    c.configured_job_name AS workflow_name,",
+            "monitored_workflows AS (",
+            "  SELECT c.*, c.configured_job_id AS job_id,",
+            "    COALESCE(collected_job.job_name, CONCAT('Job ', c.configured_job_id)) AS workflow_name,",
             "    CASE",
-            "      WHEN checkpoint.job_id IS NULL THEN 'Jobs API collection pending'",
-            "      WHEN checkpoint.last_error_message IS NOT NULL THEN 'Jobs API collection failed'",
-            "      WHEN checkpoint.last_successful_collection_at < current_timestamp() - INTERVAL 20 MINUTES THEN 'Jobs API data stale'",
+            "      WHEN collected_job.job_id IS NULL THEN 'Jobs API collection pending'",
+            "      WHEN collected_job.last_error_message IS NOT NULL THEN 'Jobs API collection failed'",
+            "      WHEN collected_job.last_successful_collection_at < current_timestamp() - INTERVAL 20 MINUTES THEN 'Jobs API data stale'",
             "    END AS configuration_problem",
             "  FROM configured_workflows c",
-            "  LEFT JOIN collection_checkpoints checkpoint",
-            "    ON c.workspace_id = checkpoint.workspace_id",
-            "    AND c.configured_job_id = checkpoint.job_id",
+            "  LEFT JOIN collected_jobs collected_job",
+            "    ON c.workspace_id = collected_job.workspace_id",
+            "    AND c.configured_job_id = collected_job.job_id",
             "),",
         )
     )
@@ -399,7 +378,6 @@ def _render_configured_workflows_sql(configuration: WorkflowMonitoringConfigurat
             (
                 "SELECT CAST(NULL AS INT) AS configured_order,",
                 "       CAST(NULL AS STRING) AS workspace_id,",
-                "       CAST(NULL AS STRING) AS configured_job_name,",
                 "       CAST(NULL AS STRING) AS configured_job_id,",
                 "       CAST(NULL AS STRING) AS frequency,",
                 "       CAST(NULL AS STRING) AS completion_time,",
@@ -427,7 +405,6 @@ def _render_configured_workflows_sql(configuration: WorkflowMonitoringConfigurat
             "SELECT "
             f"{workflow_index} AS configured_order, "
             f"'{_escape_sql_string(configuration.workspace_id)}' AS workspace_id, "
-            f"'{_escape_sql_string(workflow.job_name)}' AS configured_job_name, "
             f"{job_id_sql} AS configured_job_id, "
             f"'{_escape_sql_string(workflow.sla.frequency)}' AS frequency, "
             f"'{_escape_sql_string(workflow.sla.completion_time)}' AS completion_time, "

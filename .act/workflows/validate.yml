@@ -18,10 +18,18 @@ jobs:
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
       - name: Validate configuration
-        run: uv run python workflow_monitoring_dashboard.py validate --config workflow-monitoring.template.yml
+        run: uv run python workflow_monitoring_dashboard.py validate
+      - name: Snapshot generated deployment files
+        run: |
+          cp src/dashboards/workflow-monitoring.lvdash.json /tmp/workflow-monitoring.lvdash.json
+          cp resources/workflow-monitoring.jobs-api.job.yml /tmp/workflow-monitoring.jobs-api.job.yml
       - name: Generate dashboard
-        # Generation proves that the checked-in example supports zero active workflows.
-        run: uv run python workflow_monitoring_dashboard.py generate --config workflow-monitoring.template.yml
+        # Generation proves that the tracked fake configuration stays deployable.
+        run: uv run python workflow_monitoring_dashboard.py generate
+      - name: Check generated deployment files
+        run: |
+          cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json
+          cmp /tmp/workflow-monitoring.jobs-api.job.yml resources/workflow-monitoring.jobs-api.job.yml
       - name: Validate dashboard JSON
         run: jq empty src/dashboards/workflow-monitoring.lvdash.json
       - name: Check banned em dash

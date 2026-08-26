@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 RUN_STATE_TABLE_NAME = "workflow_run_api_state"
-COLLECTION_STATUS_TABLE_NAME = "workflow_api_collection_status"
+JOB_STATE_TABLE_NAME = "workflow_job_api_state"
 JOBS_API_RETENTION_DAYS = 60
 INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15
 UNITY_CATALOG_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
@@ -46,7 +46,7 @@ def _run_state_schema() -> Any:
     )
 
 
-def _collection_status_schema() -> Any:
+def _job_state_schema() -> Any:
     from pyspark.sql.types import (  # type: ignore[import-not-found]
         StringType,
         StructField,
@@ -58,6 +58,7 @@ def _collection_status_schema() -> Any:
         [
             StructField("workspace_id", StringType(), False),
             StructField("job_id", StringType(), False),
+            StructField("job_name", StringType(), True),
             StructField("last_collection_attempt_at", TimestampType(), False),
             StructField("last_successful_collection_at", TimestampType(), True),
             StructField("last_error_message", StringType(), True),
@@ -129,6 +130,13 @@ def _sanitized_error_message(collection_error: Exception) -> str:
     return " ".join(str(collection_error).split())[:500]
 
 
+def _job_name_from_job_details(job_id: int, job_details: Any) -> str:
+    job_name = str(getattr(getattr(job_details, "settings", None), "name", "")).strip()
+    if not job_name:
+        raise ValueError(f"Jobs API returned no name for job ID {job_id}")
+    return job_name
+
+
 def _create_governed_storage(
     spark_session: Any,
     catalog_name: str,
@@ -158,14 +166,15 @@ def _create_governed_storage(
     )
     spark_session.sql(
         f"""
-        CREATE TABLE IF NOT EXISTS {_qualified_table_name(catalog_name, schema_name, COLLECTION_STATUS_TABLE_NAME)} (
+        CREATE TABLE IF NOT EXISTS {_qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME)} (
           workspace_id STRING NOT NULL COMMENT 'Databricks workspace ID',
           job_id STRING NOT NULL COMMENT 'Lakeflow Job ID',
+          job_name STRING COMMENT 'Latest Lakeflow Job name returned by the Jobs API',
           last_collection_attempt_at TIMESTAMP NOT NULL COMMENT 'Latest collection attempt in UTC',
           last_successful_collection_at TIMESTAMP COMMENT 'Latest successful collection in UTC',
           last_error_message STRING COMMENT 'Sanitized latest collection error'
         ) USING DELTA
-        COMMENT 'Latest Jobs API collection checkpoint for each monitored workflow'
+        COMMENT 'Latest Jobs API metadata and collection state for each monitored workflow'
         """
     )
 
@@ -194,28 +203,29 @@ def _merge_run_state_rows(
     )
 
 
-def _merge_collection_status_rows(
+def _merge_job_state_rows(
     spark_session: Any,
     qualified_table_name: str,
-    collection_status_rows: list[dict[str, Any]],
+    job_state_rows: list[dict[str, Any]],
 ) -> None:
-    if not collection_status_rows:
+    if not job_state_rows:
         return
     from delta.tables import DeltaTable  # type: ignore[import-not-found]
 
-    collection_status_dataframe = spark_session.createDataFrame(
-        collection_status_rows,
-        _collection_status_schema(),
+    job_state_dataframe = spark_session.createDataFrame(
+        job_state_rows,
+        _job_state_schema(),
     )
     (
         DeltaTable.forName(spark_session, qualified_table_name)
         .alias("stored")
         .merge(
-            collection_status_dataframe.alias("incoming"),
+            job_state_dataframe.alias("incoming"),
             "stored.workspace_id = incoming.workspace_id AND stored.job_id = incoming.job_id",
         )
         .whenMatchedUpdate(
             set={
+                "job_name": "COALESCE(incoming.job_name, stored.job_name)",
                 "last_collection_attempt_at": "incoming.last_collection_attempt_at",
                 "last_successful_collection_at": (
                     "COALESCE(incoming.last_successful_collection_at, "
@@ -252,13 +262,13 @@ def _last_successful_collection_by_workspace_and_job(
     schema_name: str,
     workspace_id: str,
 ) -> dict[tuple[str, str], datetime]:
-    collection_status_table = _qualified_table_name(
+    job_state_table = _qualified_table_name(
         catalog_name,
         schema_name,
-        COLLECTION_STATUS_TABLE_NAME,
+        JOB_STATE_TABLE_NAME,
     )
     checkpoint_rows = (
-        spark_session.table(collection_status_table)
+        spark_session.table(job_state_table)
         .select("workspace_id", "job_id", "last_successful_collection_at")
         .where(f"workspace_id = '{workspace_id}'")
         .where("last_successful_collection_at IS NOT NULL")
@@ -342,12 +352,17 @@ def main() -> None:
         monitored_job_ids,
     )
     collected_run_rows: list[dict[str, Any]] = []
-    collection_status_rows: list[dict[str, Any]] = []
+    job_state_rows: list[dict[str, Any]] = []
     failed_job_ids: list[int] = []
 
     for monitored_job_id in monitored_job_ids:
         job_id = int(monitored_job_id)
+        job_name: str | None = None
         try:
+            job_name = _job_name_from_job_details(
+                job_id,
+                jobs_api_client.jobs.get(job_id=job_id),
+            )
             previous_success_at = last_success_by_workspace_and_job.get((workspace_id, str(job_id)))
             incremental_start_at = retention_start_at
             if previous_success_at is not None:
@@ -385,10 +400,11 @@ def main() -> None:
                 _run_state_row(workspace_id, job_id, job_run, collection_attempt_at)
                 for job_run in job_runs_by_id.values()
             )
-            collection_status_rows.append(
+            job_state_rows.append(
                 {
                     "workspace_id": workspace_id,
                     "job_id": str(job_id),
+                    "job_name": job_name,
                     "last_collection_attempt_at": collection_attempt_at,
                     "last_successful_collection_at": collection_attempt_at,
                     "last_error_message": None,
@@ -396,10 +412,11 @@ def main() -> None:
             )
         except Exception as collection_error:
             failed_job_ids.append(job_id)
-            collection_status_rows.append(
+            job_state_rows.append(
                 {
                     "workspace_id": workspace_id,
                     "job_id": str(job_id),
+                    "job_name": job_name,
                     "last_collection_attempt_at": collection_attempt_at,
                     "last_successful_collection_at": None,
                     "last_error_message": _sanitized_error_message(collection_error),
@@ -411,10 +428,10 @@ def main() -> None:
         _qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME),
         collected_run_rows,
     )
-    _merge_collection_status_rows(
+    _merge_job_state_rows(
         spark_session,
-        _qualified_table_name(catalog_name, schema_name, COLLECTION_STATUS_TABLE_NAME),
-        collection_status_rows,
+        _qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME),
+        job_state_rows,
     )
     if failed_job_ids:
         failed_job_id_text = ", ".join(str(job_id) for job_id in failed_job_ids)

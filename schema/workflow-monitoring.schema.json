@@ -24,13 +24,8 @@
     },
     "workflows": {
       "type": "array",
-      "description": "Only entries marked active are generated into dashboard SQL.",
-      "items": {
-        "oneOf": [
-          { "$ref": "#/$defs/active_workflow" },
-          { "$ref": "#/$defs/inactive_workflow" }
-        ]
-      }
+      "description": "Configured Databricks jobs. Only active entries are monitored.",
+      "items": { "$ref": "#/$defs/workflow" }
     }
   },
   "$defs": {
@@ -55,41 +50,25 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$",
       "description": "Catalog or schema name without dots or quoting characters."
     },
-    "active_workflow": {
+    "workflow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["job_name", "job_id", "monitoring_status", "sla"],
+      "required": ["job_id", "monitoring_status", "sla"],
       "properties": {
-        "job_name": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Dashboard label for the configured Databricks job ID."
-        },
         "job_id": {
           "type": "integer",
           "minimum": 1,
           "description": "Stable Databricks job ID polled by the collector."
         },
         "monitoring_status": {
-          "const": "active",
-          "description": "Include this workflow in every dashboard query and metric."
+          "enum": ["active", "inactive"],
+          "description": "Include or exclude this job without deleting its configuration."
         },
         "sla": {
           "$ref": "#/$defs/sla",
           "description": "Expected completion schedule for this workflow."
         }
       }
-    },
-    "inactive_workflow": {
-      "type": "object",
-      "required": ["monitoring_status"],
-      "properties": {
-        "monitoring_status": {
-          "const": "inactive",
-          "description": "Exclude this workflow without deleting its YAML entry."
-        }
-      },
-      "additionalProperties": true
     },
     "sla": {
       "type": "object",

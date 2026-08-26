@@ -55,11 +55,8 @@ databricks jobs list --profile <name>
 
 ### 3. Configure
 
-```sh
-cp workflow-monitoring.template.yml workflow-monitoring.yml
-```
-
-`workflow-monitoring.yml` is ignored by Git.
+Edit the tracked `workflow-monitoring.yml`. Adopter repositories should commit their own
+non-secret workspace and Job IDs. Upstream keeps fake values only.
 
 ```yaml
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
@@ -72,8 +69,7 @@ workspace_id: "1234567890123456"
 default_timezone: UTC
 
 workflows:
-  - job_name: daily_orders
-    job_id: 123456
+  - job_id: 123456
     monitoring_status: active
     sla:
       frequency: daily
@@ -83,11 +79,14 @@ workflows:
 
 `jobs_api_config` is optional. Omit it to use `workflow_monitoring.lakeflow_jobs`.
 
-Every active workflow requires:
+Every workflow entry requires:
 
 - `job_id`: stable Databricks Job ID polled by the collector
-- `job_name`: dashboard label
+- `monitoring_status`: `active` or `inactive`
 - `sla`: expected successful completion schedule
+
+The collector gets the current Job name from the Jobs API. Renaming a Databricks Job does not
+require a YAML change.
 
 ### 4. Generate and validate
 
@@ -104,7 +103,7 @@ Generation writes:
 - `src/dashboards/workflow-monitoring.lvdash.json`
 - `resources/workflow-monitoring.jobs-api.job.yml`
 
-Never edit either generated file. Edit the local YAML or dashboard scaffold, then generate again.
+Never edit either generated file. Edit the tracked YAML or dashboard scaffold, then generate again.
 
 ### 5. Deploy
 
@@ -119,7 +118,7 @@ databricks bundle run workflow_monitoring_jobs_api_collector \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-The first successful run creates the configured catalog, schema, and tables when the run identity has permission.
+The first successful run creates the configured catalog, schema, and tables when the run identity has permission. The generated schedule stays paused when no workflows are active.
 
 ## What the dashboard answers
 
@@ -148,7 +147,7 @@ The first successful run creates the configured catalog, schema, and tables when
 | Fortnightly | `first_deadline_date` | `first_deadline_date: "2026-01-12"` |
 | Monthly | `day_of_month` | `day_of_month: 31` |
 
-Every active workflow also needs `sla.completion_time` in `HH:MM`. `sla.timezone` overrides `default_timezone`.
+Every workflow also needs `sla.completion_time` in `HH:MM`. `sla.timezone` overrides `default_timezone`.
 
 Monthly days 29, 30, and 31 use the final day when the month is shorter.
 
@@ -164,22 +163,25 @@ Pause monitoring without deleting configuration:
 
 ```yaml
 workflows:
-  - job_name: daily_orders
+  - job_id: 123456
     monitoring_status: inactive
+    sla:
+      frequency: daily
+      completion_time: "06:00"
 ```
 
-Inactive entries skip active-workflow validation and dashboard generation. Zero active workflows is valid.
+Inactive entries remain fully validated but are excluded from collection and dashboard generation. Zero active workflows is valid.
 
 ## Collector state
 
 | Table | Key | Stores |
 | --- | --- | --- |
 | `workflow_run_api_state` | workspace, job, run | Start, end, normalized current state |
-| `workflow_api_collection_status` | workspace, job | Last attempt, success, and sanitized error |
+| `workflow_job_api_state` | workspace, job | Current Job name, last attempt, success, and sanitized error |
 
 Collector guarantees:
 
-- fixed five-minute schedule
+- fixed five-minute schedule, paused when no workflows are active
 - workspace and job-scoped checkpoints
 - up to 60 days of first-run history
 - idempotent Delta `MERGE`
@@ -252,22 +254,23 @@ This is read-only. Empty results prove SQL parsing, fields, and access, not real
 
 | Path | Purpose |
 | --- | --- |
-| `workflow-monitoring.template.yml` | Public configuration example |
+| `workflow-monitoring.yml` | Tracked deployment configuration with fake upstream values |
 | `schema/workflow-monitoring.schema.json` | YAML contract and editor hints |
 | `workflow_monitoring_dashboard.py` | Validation and generation |
 | `src/collect_workflow_monitoring_jobs_api.py` | Jobs API collection |
+| `resources/workflow-monitoring.jobs-api.job.yml` | Generated collector Job deployment |
 | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` | Dashboard SQL and layout source |
 | `src/visualizations/*.vega.json` | Readable custom chart sources |
 
-The public template and generated dashboard use fake values. Local adopter configuration stays ignored.
+The public configuration and generated deployment files use fake values. Adopter repositories can track their own non-secret IDs.
 
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
-| Active workflow fails schema validation | Add a positive `job_id` and complete SLA fields. |
+| Workflow fails schema validation | Add a positive `job_id` and complete SLA fields. |
 | Collector cannot create storage | Grant Unity Catalog privileges or configure existing governed storage. |
-| `Jobs API collection failed` | Read the sanitized error in `workflow_api_collection_status`. |
+| `Jobs API collection failed` | Read the sanitized error in `workflow_job_api_state`. |
 | Dashboard shows collection pending | Run the collector once, then confirm its Job ID list. |
 | Dashboard shows stale data | Check collector schedule, latest run, and run identity. |
 
