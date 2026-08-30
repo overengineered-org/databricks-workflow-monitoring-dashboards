@@ -15,8 +15,11 @@ func TestConfigurationLifecycle(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
 
-	executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
-	executeCommand(
+	initOutput := executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
+	if !strings.Contains(initOutput, "use the add command") {
+		t.Fatalf("init output does not provide invocation-neutral guidance: %s", initOutput)
+	}
+	addOutput := executeCommand(
 		t,
 		configurationPath,
 		"add",
@@ -25,6 +28,9 @@ func TestConfigurationLifecycle(t *testing.T) {
 		"--completion-time",
 		"06:00",
 	)
+	if !strings.Contains(addOutput, "use the list command") {
+		t.Fatalf("add output does not provide invocation-neutral guidance: %s", addOutput)
+	}
 	executeCommand(
 		t,
 		configurationPath,

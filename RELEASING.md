@@ -1,12 +1,11 @@
-# Release guide
+# Releasing
 
-Run the check command only from clean, synchronized `main`. A release takes about 10 minutes
-after local validation caches are warm.
+Use this maintainer guide after the pull request is approved. Complete the required local gate in
+[CONTRIBUTING.md](CONTRIBUTING.md#3-validate) before merging.
 
-This repository uses SemVer tags and GitHub Releases. Each release includes prebuilt
-configuration CLI archives, so users do not need Go.
+A release takes about 10 minutes with warm validation caches. Publishing needs separate approval.
 
-## Choose the version
+## 1. Choose the version
 
 | Change | Version |
 | --- | --- |
@@ -16,35 +15,39 @@ configuration CLI archives, so users do not need Go.
 
 Before `1.0.0`, an incompatible change normally increments the minor version.
 
-## Release in five steps
+## 2. Merge the version change
 
-1. Update `project.version` in `pyproject.toml` through a pull request.
-2. Squash-merge the approved pull request.
-3. Update local `main` with `git pull --ff-only`.
-4. Check the exact version without publishing:
+1. Update `project.version` in `pyproject.toml`.
+2. Run `uv lock` so `uv.lock` has the same version.
+3. Merge the approved pull request with squash.
+4. Use a clean `main` checkout matching `origin/main`.
 
-   ```sh
-   ./scripts/release.sh --check v0.1.0
-   ```
+## 3. Check without publishing
 
-5. After separate publish approval, create and verify the release:
+Replace `<version>` with the version from `pyproject.toml`:
 
-   ```sh
-   ./scripts/release.sh --publish v0.1.0
-   ```
+```sh
+./scripts/release.sh --check v<version>
+```
 
-Replace `v0.1.0` with the version in `pyproject.toml`.
+This validates the exact commit and builds temporary archives. It creates no tag or release.
 
-## What the script proves
+## 4. Publish after approval
 
-- The version is valid SemVer and matches `pyproject.toml`.
-- The branch is clean `main` at the exact `origin/main` commit.
-- Required tools and GitHub authentication work.
-- Local Act, full-history Gitleaks, and Go tests pass.
-- CLI archives build for macOS, Linux, and Windows.
+```sh
+./scripts/release.sh --publish v<version>
+```
 
-`--check` builds temporary archives but creates no tag or release. `--publish` also verifies
-that the published tag resolves to the validated commit. This project does not use
-semantic-release or GitHub-hosted workflows.
+The script creates the tag and immutable GitHub Release, then verifies the published commit.
 
-Next: compare `pyproject.toml` with the intended tag, then run step 4.
+## What the release script proves
+
+- The SemVer tag matches `pyproject.toml`.
+- Local `main` exactly matches `origin/main`.
+- Act, Gitleaks, Go tests, and release builds pass.
+- CLI archives exist for macOS, Linux, and Windows.
+- The published tag points to the validated commit.
+
+Users run the released CLI through the repository-local command documented in
+[README step 1](README.md#1-clone-and-prepare). This repository does not use semantic-release or
+GitHub-hosted workflows.

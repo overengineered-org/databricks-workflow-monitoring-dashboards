@@ -980,6 +980,40 @@ class JobsApiCollectorTests(unittest.TestCase):
 class RepositoryContractTests(unittest.TestCase):
     """Keep deployment and release tools on one reviewed contract."""
 
+    def test_local_documentation_links_resolve(self) -> None:
+        documentation_paths = tuple(REPOSITORY_ROOT.rglob("*.md"))
+        self.assertGreaterEqual(len(documentation_paths), 4)
+
+        for documentation_path in documentation_paths:
+            documentation_text = documentation_path.read_text(encoding="utf-8")
+            relative_links = re.findall(r"(?<!!)\[[^]]+\]\(([^)]+)\)", documentation_text)
+            for relative_link in relative_links:
+                if relative_link.startswith(("http://", "https://", "mailto:")):
+                    continue
+                relative_target, _, target_anchor = relative_link.partition("#")
+                linked_document_path = (
+                    (documentation_path.parent / relative_target).resolve()
+                    if relative_target
+                    else documentation_path
+                )
+                self.assertTrue(
+                    linked_document_path.is_file(),
+                    f"{documentation_path}: missing linked file {relative_link}",
+                )
+                if not target_anchor:
+                    continue
+                linked_document_text = linked_document_path.read_text(encoding="utf-8")
+                linked_headings = re.findall(r"^#{1,6}\s+(.+)$", linked_document_text, re.MULTILINE)
+                linked_anchors = {
+                    re.sub(r"[ _]+", "-", re.sub(r"[^a-z0-9 _-]", "", heading.lower()))
+                    for heading in linked_headings
+                }
+                self.assertIn(
+                    target_anchor,
+                    linked_anchors,
+                    f"{documentation_path}: missing linked section {relative_link}",
+                )
+
     def test_cli_and_release_contracts_are_aligned(self) -> None:
         tracked_configuration_path = REPOSITORY_ROOT / "workflow-monitoring.yml"
         self.assertTrue(tracked_configuration_path.is_file())
