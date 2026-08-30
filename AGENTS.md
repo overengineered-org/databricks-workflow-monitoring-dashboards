@@ -1,30 +1,52 @@
 # Agent guide
 
+Read this guide before changing repository files.
+
 ## Personal Git strategy
 
 These rules are mandatory for repository work.
 
-- Before editing: verify `pwd`, `git status -sb`, current branch, remotes, and worktrees. Keep repository ownership explicit.
-- Start work from the current `origin/main` in a fresh worktree when possible. Do not build on stale local `main`.
-- Use an intention-revealing branch name: `feat/`, `fix/`, `chore/`, or `docs/` plus a short scope.
-- Keep each change focused. Stage explicit paths. Do not silently include unrelated worktree changes.
-- Push the branch and use a pull request for normal work. Do not push directly to `main` after repository bootstrap unless explicitly approved in the current request.
-- Before merging, recheck the PR head, latest reviews, review threads, checks, `origin/main`, and mergeability live.
-- Merge, deploy, production writes, and other consequential mutations are separate approvals. PR readiness is not merge approval.
-- Merge with squash only. Reactions and Codex review are not approval. Wait for a real review body or explicit go-ahead.
-- After conflicts: fetch current `origin/main`, rebase, rerun local validation, then push with `--force-with-lease`. Never force-push blindly.
-- After merge: verify the merged head, `origin/main`, PR/issue closure when relevant, and cleanup of safe temporary branches/worktrees.
-- Keep proof precise: distinguish local results, GitHub metadata, backend readbacks, visible-device proof, and deployed/live proof. Never claim a stronger result than the evidence.
-- Use GitHub CLI as the primary GitHub interface. Never run `gh auth refresh` unless explicitly requested. If a GitHub command fails only inside the sandbox, retry that same command with escalation before reporting GitHub blocked.
+### Before editing
+
+- Verify `pwd`, `git status -sb`, current branch, remotes, and worktrees.
+- Start from current `origin/main` in a fresh worktree when possible.
+- Use a clear `feat/`, `fix/`, `chore/`, or `docs/` branch name.
+- Keep ownership explicit. Stage explicit paths and preserve unrelated changes.
+
+### Pull requests
+
+- Push a branch and open a pull request for normal work.
+- Do not push to `main` without explicit approval in the current request.
+- Before merging, recheck the head, reviews, threads, checks, `origin/main`, and mergeability.
+- Treat merge, deploy, and production writes as separate approvals.
+- Use GitHub CLI. Never run `gh auth refresh` unless explicitly requested.
+
+If GitHub fails only inside the sandbox, retry that command with escalation before reporting a
+blocker.
+
+### Merge and proof
+
+- Squash-merge only after a real review body or explicit approval.
+- After conflicts, rebase on current `origin/main`, validate, then use `--force-with-lease`.
+- After merge, verify the merged head, main, related closure, and safe cleanup.
+- Separate local, GitHub, backend, visible-device, deployed, and live proof.
+- Never claim stronger proof than the evidence.
 
 ## Dashboard project rules
 
-- Upstream contributions must use fake account values in the configuration example and generated dashboard. Adopter repositories may track their own configuration and generated dashboard according to their security policy.
-- Keep `.github/repository-metadata.yml` aligned with the GitHub About section, topics, and social preview.
-- Edit `workflow-monitoring.scaffold.lvdash.json`, then run the generator. Never edit the generated `workflow-monitoring.lvdash.json` directly.
-- Live SQL validation must remain read-only. Do not create dummy tables or insert test rows.
-- Report empty-query validation accurately. It proves SQL syntax, referenced fields, and access, not real workflow metric correctness.
-- Use simplified technical English. Comment non-obvious intent and constraints, but do not restate self-explanatory code.
+### Source files
+
+- Use fake account values in upstream configuration and generated dashboards.
+- Adopter repositories may track their own configuration under their security policy.
+- Keep repository metadata aligned with the GitHub About section, topics, and social preview.
+- Edit the dashboard scaffold, then run the generator. Never edit the generated dashboard.
+
+### Validation and language
+
+- Keep live SQL validation read-only. Do not create dummy tables or insert test rows.
+- Empty results prove SQL syntax, fields, and access, not metric correctness.
+- Use simplified technical English.
+- Comment non-obvious intent and constraints only.
 - Do not use em dashes in code, comments, documentation, or commit messages.
 
 ## Pipelines: local act only
@@ -32,7 +54,7 @@ These rules are mandatory for repository work.
 This repository must not run pipelines on GitHub.
 
 - Never create or modify `.github/workflows/`.
-- Never configure GitHub Actions, run `gh workflow run`, or use a GitHub-hosted runner for validation.
+- Never configure or run GitHub Actions.
 - Store local workflow definitions under `.act/workflows/`.
 - Run the repository-specific local gate through its wrapper:
 
@@ -40,15 +62,20 @@ This repository must not run pipelines on GitHub.
   scripts/run-local-validation.sh
   ```
 
-- The wrapper selects ARM64 or AMD64, rebuilds the fixed local image, reuses the labelled Act
-  container while its image is current, and removes only dangling images.
+- The wrapper selects the host architecture and rebuilds the fixed image.
+- It reuses the labelled Act container while its image is current.
+- It removes only dangling images.
 - Do not bypass the wrapper for the standard local gate.
-- Preserve the command and outcome as validation evidence.
-- If Docker, `act`, or the local image is unavailable, stop and repair the local gate. Do not substitute GitHub Actions.
+
+If Docker, `act`, or the local image is unavailable, repair the local gate. Do not substitute
+GitHub Actions. Preserve the wrapper command and outcome as evidence.
 
 ## Change quality
 
 - Diagnose first, then make the smallest durable change that fully meets the current requirement.
-- Use established libraries and tools where suitable. Do not add compatibility layers or unfinished stopgaps.
+- Use established libraries and tools where suitable.
+- Do not add compatibility layers or unfinished stopgaps.
 - Keep names intention-revealing and domain-specific.
 - Fix all issues found during the session, while keeping unrelated scope explicit.
+
+Next: verify the repository state before editing.

@@ -1,27 +1,27 @@
 # Release guide
 
-This repository uses local GitHub Releases with SemVer tags and prebuilt configuration CLI
-archives.
+Run the check command only from clean, synchronized `main`. A release takes about 10 minutes
+after local validation caches are warm.
 
-It does not use semantic-release or GitHub-hosted workflows. Users install a release binary and
-do not need Go.
+This repository uses SemVer tags and GitHub Releases. Each release includes prebuilt
+configuration CLI archives, so users do not need Go.
 
 ## Choose the version
 
 | Change | Version |
 | --- | --- |
 | Incompatible public configuration | Major |
-| New backward-compatible capability | Minor |
+| New public capability | Minor |
 | Fix or documentation only | Patch |
 
-Before `1.0.0`, incompatible changes normally increment the minor version.
+Before `1.0.0`, an incompatible change normally increments the minor version.
 
-## Release
+## Release in five steps
 
 1. Update `project.version` in `pyproject.toml` through a pull request.
-2. Squash-merge the approved release pull request.
+2. Squash-merge the approved pull request.
 3. Update local `main` with `git pull --ff-only`.
-4. Run the release check:
+4. Check the exact version without publishing:
 
    ```sh
    ./scripts/release.sh --check v0.1.0
@@ -37,12 +37,14 @@ Replace `v0.1.0` with the version in `pyproject.toml`.
 
 ## What the script proves
 
-- Version is valid SemVer and matches `pyproject.toml`.
-- Branch is clean `main` at the exact `origin/main` commit.
-- Required CLI tools are installed and GitHub authentication works.
-- Local Act validation uses the host's ARM64 or AMD64 architecture; full-history Gitleaks passes.
-- Go tests pass and CLI archives build for macOS, Linux, and Windows.
-- The published GitHub tag resolves to the validated commit.
+- The version is valid SemVer and matches `pyproject.toml`.
+- The branch is clean `main` at the exact `origin/main` commit.
+- Required tools and GitHub authentication work.
+- Local Act, full-history Gitleaks, and Go tests pass.
+- CLI archives build for macOS, Linux, and Windows.
 
-`--check` builds temporary archives but never creates a tag or release. `--publish` attaches the
-same target set to the GitHub Release.
+`--check` builds temporary archives but creates no tag or release. `--publish` also verifies
+that the published tag resolves to the validated commit. This project does not use
+semantic-release or GitHub-hosted workflows.
+
+Next: compare `pyproject.toml` with the intended tag, then run step 4.
