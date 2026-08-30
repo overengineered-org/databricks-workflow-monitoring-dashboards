@@ -89,8 +89,9 @@ GitHub-hosted Actions are disabled. Run the repository wrapper:
 scripts/run-local-validation.sh
 ```
 
-The wrapper selects the host architecture, rebuilds the fixed image, reuses its labelled Act
-container while the image is current, and removes only dangling images.
+The wrapper selects the host architecture, rebuilds the fixed image, and reuses its labelled
+Act container for the current checkout. It replaces the container when the image or checkout
+changes, then removes only dangling images.
 
 Live Databricks validation is optional unless a maintainer requests it. Every live command must
 use the profile you selected as `--profile <name>`.

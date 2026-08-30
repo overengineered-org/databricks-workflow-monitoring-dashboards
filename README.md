@@ -308,9 +308,9 @@ Full local gate, usually under 2 minutes after the first run:
 scripts/run-local-validation.sh
 ```
 
-The wrapper rebuilds one fixed image and reuses one labelled Act container while that image is
-current. It replaces a stale container and removes only unused dangling images. GitHub-hosted
-pipelines are disabled.
+The wrapper rebuilds one fixed image and reuses one labelled Act container for the current
+checkout. It replaces the container when the image or checkout changes, then removes only
+unused dangling images. GitHub-hosted pipelines are disabled.
 
 Read-only live SQL validation:
 
