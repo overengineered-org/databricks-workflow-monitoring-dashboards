@@ -115,5 +115,3 @@ implementation small and complete.
 
 For releases, follow [RELEASING.md](RELEASING.md). When the GitHub About text, topics, or social
 preview changes, update `.github/repository-metadata.yml` and GitHub together.
-
-Next: run the clone command in step 1.

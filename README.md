@@ -409,5 +409,3 @@ Databricks documentation:
 - [AI/BI dashboard documentation](https://docs.databricks.com/aws/en/dashboards/)
 - [Lakeflow Jobs API 2.2](https://docs.databricks.com/aws/en/reference/jobs-api-2-2-updates)
 - [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles/)
-
-Next: run the clone command in step 1.
