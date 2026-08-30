@@ -75,6 +75,8 @@ class RepositoryLauncherIntegrationTests(unittest.TestCase):
                     "WORKFLOW_MONITORING_RELEASE_DOWNLOAD_ROOT": release_download_root.as_uri(),
                 }
             )
+            if os.name != "nt":
+                launcher_environment["PATH"] = os.pathsep.join(("/usr/bin", "/bin"))
             launcher_command = (
                 [sys.executable, str(CLI_LAUNCHER_PATH)]
                 if os.name == "nt"

@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
-import tomllib
 import urllib.error
 import urllib.request
 import zipfile
@@ -23,6 +23,7 @@ DEFAULT_RELEASE_DOWNLOAD_ROOT = (
     "https://github.com/overengineered-org/"
     "databricks-workflow-monitoring-dashboards/releases/download"
 )
+PROJECT_VERSION_PATTERN = re.compile(r'^version = "([^"]+)"$', re.MULTILINE)
 
 
 class ReleaseTarget(NamedTuple):
@@ -33,9 +34,11 @@ class ReleaseTarget(NamedTuple):
 
 
 def read_project_version(repository_root: Path) -> str:
-    with (repository_root / "pyproject.toml").open("rb") as project_file:
-        project_configuration = tomllib.load(project_file)
-    return str(project_configuration["project"]["version"])
+    project_configuration = (repository_root / "pyproject.toml").read_text(encoding="utf-8")
+    project_version_match = PROJECT_VERSION_PATTERN.search(project_configuration)
+    if project_version_match is None:
+        raise RuntimeError("pyproject.toml does not contain project.version")
+    return project_version_match.group(1)
 
 
 def resolve_release_target(system_name: str, machine_architecture: str) -> ReleaseTarget:
@@ -178,7 +181,7 @@ def run_repository_cli(command_arguments: list[str]) -> int:
 def main() -> int:
     try:
         return run_repository_cli(sys.argv[1:])
-    except (OSError, RuntimeError, KeyError, tomllib.TOMLDecodeError) as launcher_error:
+    except (OSError, RuntimeError) as launcher_error:
         print(f"workflow-monitoring: {launcher_error}", file=sys.stderr)
         return 1
 
