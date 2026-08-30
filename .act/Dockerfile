@@ -7,9 +7,12 @@ WORKDIR /workspace
 
 # uv installs the locked Python environment. Its official image supports ARM64.
 COPY --from=ghcr.io/astral-sh/uv:0.12.2 /uv /uvx /usr/local/bin/
+COPY --from=golang:1.26.6-bookworm /usr/local/go /usr/local/go
+COPY --from=golangci/golangci-lint:v2.12.2 /usr/bin/golangci-lint /usr/local/bin/
 
 # act mounts the repository on another filesystem, so copy dependencies into .venv.
 ENV UV_LINK_MODE=copy
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Pin the Databricks CLI so local validation does not change unexpectedly.
 RUN apt-get update \

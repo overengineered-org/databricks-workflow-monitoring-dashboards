@@ -13,6 +13,7 @@ topics:
   - job-monitoring
   - jobs-api
   - lakeflow-jobs
+  - lakeflow-jobs-sla-monitoring
   - sla-monitoring
   - workflow-monitoring
 social_preview: docs/images/repository-open-graph-github.png

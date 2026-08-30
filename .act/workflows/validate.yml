@@ -9,14 +9,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install locked Python environment
+      - name: Verify committed Python lockfile
+        run: uv lock --check
+      - name: Install committed Python environment
         run: uv sync --locked
       - name: Check Python formatting
-        run: uv run ruff format --check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
+        run: uv run ruff format --check .
       - name: Run Python lint checks
-        run: uv run ruff check workflow_monitoring_dashboard.py src/collect_workflow_monitoring_jobs_api.py tests
+        run: uv run ruff check .
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
+      - name: Check Go CLI
+        run: |
+          golangci-lint fmt --diff ./...
+          golangci-lint run ./...
+          go test ./...
+      - name: Test CLI with the Python validator
+        run: |
+          go build -trimpath -o /tmp/workflow-monitoring ./cmd/workflow-monitoring
+          /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml init \
+            --workspace-id 123456789 \
+            --catalog monitoring \
+            --schema lakeflow_jobs
+          /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml add \
+            --job-id 42 \
+            --status active \
+            --completion-time 06:00
+          uv run python workflow_monitoring_dashboard.py validate \
+            --config /tmp/workflow-monitoring.yml
       - name: Validate configuration
         run: uv run python workflow_monitoring_dashboard.py validate
       - name: Snapshot generated deployment files

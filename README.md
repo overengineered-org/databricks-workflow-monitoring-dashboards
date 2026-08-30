@@ -24,6 +24,7 @@ intentionally excluded.
 
 Required:
 
+- prebuilt `workflow-monitoring` configuration CLI
 - Python 3.11 or newer
 - `uv` 0.12 or newer
 - Databricks CLI 1.13.0 or newer
@@ -33,6 +34,17 @@ Docker and `act` are needed only for the full local validation gate.
 
 ```sh
 uv sync --locked
+```
+
+Users do not install Go. Download the archive for your operating system and architecture from
+[GitHub Releases](https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/releases).
+For Apple Silicon after the first release:
+
+```sh
+repository_url="https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards"
+curl -LO "$repository_url/releases/latest/download/workflow-monitoring-darwin-arm64.tar.gz"
+tar -xzf workflow-monitoring-darwin-arm64.tar.gz
+sudo install -m 0755 workflow-monitoring /usr/local/bin/workflow-monitoring
 ```
 
 ### 2. Choose a profile
@@ -58,18 +70,49 @@ databricks jobs list --profile <name>
 
 ### 3. Configure
 
-Edit the tracked `workflow-monitoring.yml`. Adopter repositories should commit their own
-non-secret workspace and Job IDs. Upstream keeps fake values only.
+Create the tracked configuration, then add each Job ID:
+
+```sh
+workflow-monitoring init \
+  --workspace-id <workspace-id> \
+  --catalog <existing-catalog> \
+  --schema <existing-schema> \
+  --force
+
+workflow-monitoring add \
+  --job-id <job-id> \
+  --status active \
+  --completion-time 06:00
+
+workflow-monitoring list
+```
+
+Omit `--catalog` and `--schema` together to use automatic storage. Omit `--force` when the
+configuration does not exist. Every command also accepts `--config <path>`.
+
+Use one command for each change:
+
+| Task | Command |
+| --- | --- |
+| Create configuration | `workflow-monitoring init --workspace-id <id>` |
+| List workflows | `workflow-monitoring list` |
+| Add workflow | `workflow-monitoring add --job-id <id> --completion-time <HH:MM>` |
+| Update workflow | `workflow-monitoring update <job-id> <changed flags>` |
+| Remove workflow | `workflow-monitoring remove <job-id> --yes` |
+
+The CLI keeps YAML comments and workflow order, and prevents duplicate Job IDs. Commit the
+non-secret workspace and Job IDs in adopter repositories. Upstream keeps fake values only.
 
 Choose one storage mode:
 
 | Mode | Configuration | Catalog and schema behavior |
 | --- | --- | --- |
-| Bring your own | Set both `jobs_api_config.catalog` and `jobs_api_config.schema` | Uses existing objects and skips catalog/schema DDL. |
-| Automatic | Omit the entire `jobs_api_config` block | Creates `workflow_monitoring.lakeflow_jobs` if missing. |
+| Bring your own | Set both fields | Uses existing objects; skips namespace DDL. |
+| Automatic | Omit `jobs_api_config` | Creates `workflow_monitoring.lakeflow_jobs` if missing. |
 
 In both modes, the collector creates its two Delta tables if missing. A partial
-`jobs_api_config` block is invalid.
+`jobs_api_config` block is invalid. Manual YAML editing remains supported for code review and
+advanced changes:
 
 ```yaml
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
@@ -219,7 +262,7 @@ Storage-specific access:
 | Mode | Extra Unity Catalog access |
 | --- | --- |
 | Bring your own | `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE` on the selected objects. |
-| Automatic | Rights to create the default catalog and schema. If either exists, grant the matching traversal and child-creation privileges. |
+| Automatic | Rights to create the default catalog and schema, including child objects. |
 
 ## Bundle settings
 
@@ -236,11 +279,13 @@ The dashboard uses embedded credentials and grants `CAN_READ` to the viewer grou
 Fast checks:
 
 ```sh
-uv run ruff format --check workflow_monitoring_dashboard.py \
-  src/collect_workflow_monitoring_jobs_api.py tests
-uv run ruff check workflow_monitoring_dashboard.py \
-  src/collect_workflow_monitoring_jobs_api.py tests
+uv lock --check
+uv run ruff format --check .
+uv run ruff check .
 uv run python -m unittest discover -s tests -v
+golangci-lint fmt --diff ./...
+golangci-lint run ./...
+go test ./...
 ```
 
 Full local gate:
@@ -279,6 +324,7 @@ This is read-only. Empty results prove SQL parsing, fields, and access, not real
 | Path | Purpose |
 | --- | --- |
 | `workflow-monitoring.yml` | Tracked deployment configuration with fake upstream values |
+| `cmd/workflow-monitoring` | Configuration CLI |
 | `schema/workflow-monitoring.schema.json` | YAML contract and editor hints |
 | `workflow_monitoring_dashboard.py` | Validation and generation |
 | `src/collect_workflow_monitoring_jobs_api.py` | Jobs API collection |
@@ -298,6 +344,7 @@ can track their own non-secret IDs.
 | Bring-your-own storage fails | Confirm both objects exist and grant `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE`. |
 | `Jobs API collection failed` | Read the bounded error in `workflow_job_api_state`. |
 | Workspace ID mismatch | Replace `workspace_id` with the ID reported by the selected profile. |
+| `workflow-monitoring` is missing | Download the correct prebuilt archive from GitHub Releases. |
 | Dashboard shows collection pending | Run the collector once, then confirm its Job ID list. |
 | Dashboard shows stale data | Check collector schedule, latest run, and run identity. |
 

@@ -14,11 +14,21 @@ Small documentation fixes do not need an issue first.
 ## Set up the project
 
 You need Python 3.11 or newer, `uv` 0.12 or newer, and Databricks CLI 1.13.0 or newer.
+Install Go 1.25 or newer and golangci-lint 2.12.2 only when changing the
+configuration CLI.
 
 ```sh
 git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
 cd databricks-workflow-monitoring-dashboards
 uv sync --locked
+```
+
+When `pyproject.toml` dependencies change, update and commit the lockfile in the same pull
+request:
+
+```sh
+uv lock
+git add pyproject.toml uv.lock
 ```
 
 Create a branch from the latest `main`:
@@ -36,6 +46,7 @@ Use `feat/`, `fix/`, `docs/`, or `chore/` followed by a short purpose.
 | Change | File |
 | --- | --- |
 | Public YAML format | `schema/workflow-monitoring.schema.json` |
+| YAML CRUD | `cmd/workflow-monitoring/` |
 | Validation or generation | `workflow_monitoring_dashboard.py` |
 | Jobs API collection | `src/collect_workflow_monitoring_jobs_api.py` |
 | Dashboard SQL or layout | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
@@ -65,14 +76,16 @@ catalog and schema, so the generated collector skips catalog and schema DDL.
 Run the fast checks first:
 
 ```sh
-uv run ruff format --check workflow_monitoring_dashboard.py \
-  src/collect_workflow_monitoring_jobs_api.py tests
-uv run ruff check workflow_monitoring_dashboard.py \
-  src/collect_workflow_monitoring_jobs_api.py tests
+uv lock --check
+uv run ruff format --check .
+uv run ruff check .
 uv run python -m unittest discover -s tests -v
 uv run python workflow_monitoring_dashboard.py validate
 for visualization_file in src/visualizations/*.vega.json; do jq empty "$visualization_file"; done
 jq empty src/dashboards/workflow-monitoring.lvdash.json
+golangci-lint fmt --diff ./...
+golangci-lint run ./...
+go test ./...
 ```
 
 Then run the required local workflow. GitHub-hosted Actions are disabled for this repository.

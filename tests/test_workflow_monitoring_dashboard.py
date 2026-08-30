@@ -472,7 +472,13 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertIn("Jobs API data stale", dashboard_text)
             self.assertIn("c.configured_job_id AS job_id", dashboard_text)
             self.assertIn("COALESCE(collected_job.job_name", dashboard_text)
-            resource_document = yaml.safe_load(resource_path.read_text(encoding="utf-8"))
+            resource_text = resource_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "# Set workspace_id in workflow-monitoring.yml or with the "
+                "workflow-monitoring CLI.",
+                resource_text,
+            )
+            resource_document = yaml.safe_load(resource_text)
             collector_job = resource_document["resources"]["jobs"][
                 "workflow_monitoring_jobs_api_collector"
             ]
@@ -1025,6 +1031,16 @@ class RepositoryContractTests(unittest.TestCase):
         release_script = RELEASE_SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn('runner_platform="linux/arm64"', release_script)
         self.assertIn('runner_platform="linux/amd64"', release_script)
+        expected_cli_targets = {
+            "darwin arm64 tar.gz",
+            "darwin amd64 tar.gz",
+            "linux arm64 tar.gz",
+            "linux amd64 tar.gz",
+            "windows amd64 zip",
+        }
+        for expected_cli_target in expected_cli_targets:
+            self.assertIn(f"build_cli_asset {expected_cli_target}", release_script)
+        self.assertIn('"${release_assets[@]}"', release_script)
 
         help_check = subprocess.run(
             ["bash", str(RELEASE_SCRIPT_PATH), "--help"],

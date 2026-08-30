@@ -49,6 +49,14 @@ When finished, remove the disposable resources:
 databricks bundle destroy --auto-approve -t dev --profile <profile>
 ```
 
-To monitor these jobs, use the IDs shown by `bundle summary` in the root
-`workflow-monitoring.yml`. Then generate and deploy the monitoring bundle separately. Job names
+To monitor these jobs, use each ID shown by `bundle summary`:
+
+```sh
+workflow-monitoring add \
+  --job-id <job-id> \
+  --status active \
+  --completion-time 06:00
+```
+
+Run the command once per Job ID. Then generate and deploy the root monitoring bundle. Job names
 come from the Jobs API.

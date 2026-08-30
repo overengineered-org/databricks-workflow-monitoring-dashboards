@@ -1,10 +1,10 @@
 # Release guide
 
-This repository uses local GitHub Releases with SemVer tags.
+This repository uses local GitHub Releases with SemVer tags and prebuilt configuration CLI
+archives.
 
-It does not use semantic-release. There is no package registry or compiled release artifact, and
-GitHub-hosted workflows are disabled. GitHub automatically provides source ZIP and tar archives
-for each release.
+It does not use semantic-release or GitHub-hosted workflows. Users install a release binary and
+do not need Go.
 
 ## Choose the version
 
@@ -41,6 +41,8 @@ Replace `v0.1.0` with the version in `pyproject.toml`.
 - Branch is clean `main` at the exact `origin/main` commit.
 - Required CLI tools are installed and GitHub authentication works.
 - Local Act validation uses the host's ARM64 or AMD64 architecture; full-history Gitleaks passes.
+- Go tests pass and CLI archives build for macOS, Linux, and Windows.
 - The published GitHub tag resolves to the validated commit.
 
-`--check` never creates a tag or release. `--publish` is the publication boundary.
+`--check` builds temporary archives but never creates a tag or release. `--publish` attaches the
+same target set to the GitHub Release.
