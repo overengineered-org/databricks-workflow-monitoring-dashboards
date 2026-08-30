@@ -42,33 +42,18 @@ All jobs use serverless compute and have a 60-second timeout. Running a job can 
 
 ## 3. Add the jobs to monitoring
 
-Complete steps 1 to 3 in the root [README](../../README.md) first. Then return to the repository
-root and add each Job ID:
+Return to the repository root. Repeat the add command from
+[README step 3](../../README.md#3-create-the-configuration) for each Job ID from the bundle
+summary. Job names come from the Jobs API.
 
-```sh
-cd ../..
-workflow-monitoring add \
-  --job-id <job-id> \
-  --status active \
-  --completion-time 06:00
-```
-
-Run the command once per Job ID. Job names come from the Jobs API. Generate and deploy the root
-monitoring bundle with steps 4 and 5 in the root README.
+Run [README steps 4 and 5](../../README.md#4-generate-and-validate) to generate, deploy, and load
+the dashboard.
 
 ## 4. Remove the example
 
-If you added the jobs to monitoring, remove each Job ID and redeploy the root bundle first:
-
-```sh
-cd ../..
-workflow-monitoring remove <job-id> --yes
-uv run --no-dev python workflow_monitoring_dashboard.py generate
-databricks bundle deploy -t dev --profile <profile> \
-  --var="warehouse_id=<warehouse-id>"
-```
-
-Run the remove command once per Job ID. Then remove the four disposable jobs:
+If you added the Jobs to monitoring, use `./workflow-monitoring help remove` and remove each Job
+ID. Repeat [README steps 4 and 5](../../README.md#4-generate-and-validate). Then remove the four
+disposable Jobs:
 
 ```sh
 cd examples/fast-logistics
@@ -76,5 +61,3 @@ databricks bundle destroy --auto-approve -t dev --profile <profile>
 ```
 
 This does not remove the monitoring bundle or collected historical rows.
-
-Next: run the three commands in step 1 with your selected profile.

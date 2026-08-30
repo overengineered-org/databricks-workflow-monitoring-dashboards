@@ -96,7 +96,7 @@ func newInitCommand(settings *commandSettings) *cobra.Command {
 			}
 			return writeOutput(
 				command.OutOrStdout(),
-				"Created %s. Next: workflow-monitoring add --help\n",
+				"Created %s. Next: use the add command to select a Job.\n",
 				settings.configurationPath,
 			)
 		},
@@ -213,7 +213,7 @@ func newAddCommand(settings *commandSettings) *cobra.Command {
 			}
 			return writeOutput(
 				command.OutOrStdout(),
-				"Added job %d. Next: workflow-monitoring list\n",
+				"Added job %d. Next: use the list command to review it.\n",
 				workflow.JobID,
 			)
 		},
