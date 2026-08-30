@@ -65,6 +65,7 @@ sla_calculation_statement="
 SELECT
   assert_true(array_contains(sequence(DATE '2026-02-10', DATE '2026-02-12'), DATE '2026-02-11'), 'daily schedule failed'),
   assert_true(date_add(DATE '2026-02-11', -pmod(dayofweek(DATE '2026-02-11') - 2, 7)) = DATE '2026-02-09', 'weekly schedule failed'),
+  assert_true(date_add(date_add(DATE '2026-02-11', -pmod(dayofweek(DATE '2026-02-11') - 2, 7)), -7) = DATE '2026-02-02', 'weekly predecessor failed'),
   assert_true(date_add(DATE '2026-01-12', CAST(FLOOR(datediff(DATE '2026-02-11', DATE '2026-01-12') / 14.0) AS INT) * 14) = DATE '2026-02-09', 'fortnightly schedule failed'),
   assert_true(date_add(to_date(date_trunc('MONTH', DATE '2026-02-11')), LEAST(31, day(last_day(DATE '2026-02-11'))) - 1) = DATE '2026-02-28', 'monthly cap failed'),
   assert_true(to_utc_timestamp(to_timestamp('2026-01-15 06:00', 'yyyy-MM-dd HH:mm'), 'Australia/Melbourne') = TIMESTAMP '2026-01-14 19:00:00', 'timezone conversion failed')

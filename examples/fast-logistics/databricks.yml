@@ -1,5 +1,6 @@
 bundle:
   name: fast-logistics-example
+  databricks_cli_version: ">= 1.13.0"
 
 include:
   - resources/*.yml

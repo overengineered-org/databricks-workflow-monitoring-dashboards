@@ -7,21 +7,55 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      GOCACHE: /tmp/workflow-monitoring-act-go-cache
+      GOMODCACHE: /tmp/workflow-monitoring-act-go-mod-cache
+      UV_CACHE_DIR: /tmp/workflow-monitoring-act-uv-cache
+      UV_PROJECT_ENVIRONMENT: /tmp/workflow-monitoring-act-venv
     steps:
       - uses: actions/checkout@v4
-      - name: Install locked Python environment
+      - name: Verify committed Python lockfile
+        run: uv lock --check
+      - name: Install committed Python environment
         run: uv sync --locked
       - name: Check Python formatting
-        run: uv run ruff format --check workflow_monitoring_dashboard.py tests
+        run: uv run ruff format --check .
       - name: Run Python lint checks
-        run: uv run ruff check workflow_monitoring_dashboard.py tests
+        run: uv run ruff check .
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
+      - name: Check Go CLI
+        run: |
+          golangci-lint fmt --diff ./...
+          golangci-lint run ./...
+          go test ./...
+      - name: Test CLI with the Python validator
+        run: |
+          go build -trimpath -o /tmp/workflow-monitoring ./cmd/workflow-monitoring
+          /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml init \
+            --workspace-id 123456789 \
+            --catalog monitoring \
+            --schema lakeflow_jobs \
+            --force
+          /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml add \
+            --job-id 42 \
+            --status active \
+            --completion-time 06:00
+          uv run python workflow_monitoring_dashboard.py validate \
+            --config /tmp/workflow-monitoring.yml
       - name: Validate configuration
-        run: uv run python workflow_monitoring_dashboard.py validate --config workflow-monitoring.template.yml
+        run: uv run python workflow_monitoring_dashboard.py validate
+      - name: Snapshot generated deployment files
+        run: |
+          cp src/dashboards/workflow-monitoring.lvdash.json /tmp/workflow-monitoring.lvdash.json
+          cp resources/workflow-monitoring.jobs-api.job.yml /tmp/workflow-monitoring.jobs-api.job.yml
       - name: Generate dashboard
-        # Generation proves that the checked-in example supports zero active workflows.
-        run: uv run python workflow_monitoring_dashboard.py generate --config workflow-monitoring.template.yml
+        # Generation proves that the tracked fake configuration stays deployable.
+        run: uv run python workflow_monitoring_dashboard.py generate
+      - name: Check generated deployment files
+        run: |
+          cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json
+          cmp /tmp/workflow-monitoring.jobs-api.job.yml resources/workflow-monitoring.jobs-api.job.yml
       - name: Validate dashboard JSON
         run: jq empty src/dashboards/workflow-monitoring.lvdash.json
       - name: Check banned em dash

@@ -23,11 +23,10 @@ jobs:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
           DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
         run: test -n "$DATABRICKS_CONFIG_PROFILE" && test -n "$DATABRICKS_WAREHOUSE_ID"
-      - name: Install locked Python environment
+      - name: Verify committed Python lockfile
+        run: uv lock --check
+      - name: Install committed Python environment
         run: uv sync --locked
-      - name: Require local workflow monitoring configuration
-        # The real file is ignored because it contains organization-specific values.
-        run: test -f workflow-monitoring.yml
       - name: Generate dashboard
         run: uv run python workflow_monitoring_dashboard.py generate
       - name: Validate SQL datasets

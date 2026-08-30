@@ -1,33 +1,17 @@
 # Contributing
 
-GitHub repository metadata is documented in `.github/repository-metadata.yml`. GitHub does not apply this file automatically. If the repository About text, topics, or social preview changes, update both GitHub and this file.
+Run the setup commands below before editing. Setup takes about 2 minutes after the tools are
+installed.
 
-Thanks for helping improve Databricks Workflow Monitoring Dashboards.
+## 1. Set up the repository
 
-This guide explains how to make a focused change and prove that it works.
-
-## Before you start
-
-1. Search existing issues and pull requests for related work.
-2. Open an issue before a large behavior, configuration, or dashboard design change.
-3. Keep each pull request focused on one problem.
-4. Never include credentials, workspace URLs, warehouse IDs, or organization-specific job details.
-
-Small documentation fixes do not need an issue first.
-
-## Set up the project
-
-You need Python 3.11 or newer and `uv` 0.12 or newer.
+You need Python 3.11 or newer, `uv` 0.12 or newer, and Databricks CLI 1.13.0 or newer.
+Install Go 1.25 or newer and golangci-lint 2.12.2 only for configuration CLI changes.
 
 ```sh
 git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
 cd databricks-workflow-monitoring-dashboards
 uv sync --locked
-```
-
-Create a branch from the latest `main`:
-
-```sh
 git switch main
 git pull --ff-only
 git switch -c <feat-or-fix>/<short-name>
@@ -35,76 +19,100 @@ git switch -c <feat-or-fix>/<short-name>
 
 Use `feat/`, `fix/`, `docs/`, or `chore/` followed by a short purpose.
 
-## Know which file owns the change
+Before a large behavior, configuration, or dashboard design change:
 
-| Change | File |
+1. Search existing issues and pull requests.
+2. Open an issue describing the change.
+3. Keep the pull request focused on that one problem.
+
+Small documentation fixes do not need an issue first. Never commit credentials, workspace
+URLs, warehouse IDs, or organization-specific job details.
+
+## 2. Edit the owning file
+
+Configuration and collection changes:
+
+| Change | Owning file |
 | --- | --- |
 | Public YAML format | `schema/workflow-monitoring.schema.json` |
+| YAML CLI commands | `cmd/workflow-monitoring/` |
 | Validation or generation | `workflow_monitoring_dashboard.py` |
+| Jobs API collection | `src/collect_workflow_monitoring_jobs_api.py` |
+| Bundle deployment | `databricks.yml` or `resources/` |
+
+Dashboard and documentation changes:
+
+| Change | Owning file |
+| --- | --- |
 | Dashboard SQL or layout | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Custom Vega-Lite chart | `src/visualizations/*.vega.json` |
-| Generated dashboard | `src/dashboards/workflow-monitoring.lvdash.json` |
-| Bundle deployment | `databricks.yml` or `resources/` |
+| Generated dashboard | Generated from the dashboard scaffold |
+| Generated collector Job | Generated from the public YAML |
 | User instructions | `README.md` |
 
-Do not edit the generated `.lvdash.json` directly. Change the scaffold, then regenerate it with the public template:
+Do not edit generated deployment files directly. Change the owning source, then run:
 
 ```sh
-uv run python workflow_monitoring_dashboard.py generate \
-  --config workflow-monitoring.template.yml
+uv run python workflow_monitoring_dashboard.py generate
 ```
 
-The public template must contain fake values. Local `workflow-monitoring.yml` and `.databricks/` files are ignored and must stay out of contributions.
+Keep these product contracts:
 
-## Validate your change
+- Every workflow has a Job ID and SLA. Job names come from the Jobs API.
+- The collector schedule is fixed at five minutes.
+- Omitting `jobs_api_config` creates default storage when the collector first runs.
+- Providing `jobs_api_config` uses an existing catalog and schema without creating them.
+- Tracked configuration and generated files contain fake values only.
 
-Run the fast checks first:
+When dependencies change, run `uv lock` and commit `pyproject.toml` with `uv.lock`.
+
+## 3. Run fast checks
 
 ```sh
-uv run ruff format --check workflow_monitoring_dashboard.py tests
-uv run ruff check workflow_monitoring_dashboard.py tests
+uv lock --check
+uv run ruff format --check .
+uv run ruff check .
 uv run python -m unittest discover -s tests -v
-uv run python workflow_monitoring_dashboard.py validate \
-  --config workflow-monitoring.template.yml
+uv run python workflow_monitoring_dashboard.py validate
 for visualization_file in src/visualizations/*.vega.json; do jq empty "$visualization_file"; done
 jq empty src/dashboards/workflow-monitoring.lvdash.json
+golangci-lint fmt --diff ./...
+golangci-lint run ./...
+go test ./...
 ```
 
-Then run the required local workflow. GitHub-hosted Actions are disabled for this repository.
+## 4. Run the required local gate
+
+GitHub-hosted Actions are disabled. Run the repository wrapper:
 
 ```sh
-act --container-architecture linux/arm64 \
-  --pull=false \
-  -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-  -W .act/workflows/validate.yml
+scripts/run-local-validation.sh
 ```
 
-Use `linux/amd64` on Intel or AMD computers. See the README for building the local runner image and running optional live Databricks SQL validation.
+The wrapper selects the host architecture, rebuilds the fixed image, reuses its labelled Act
+container while the image is current, and removes only dangling images.
 
-Every live Databricks command must use an explicitly selected `--profile <name>`. Live validation and deployment are not required for ordinary contributions unless a maintainer asks for them.
+Live Databricks validation is optional unless a maintainer requests it. Every live command must
+use the profile you selected as `--profile <name>`.
 
-## Open a pull request
+## 5. Open the pull request
 
-Use a concise title and explain why the change is needed. Include:
+Include:
 
-- what changed and whether it changes public configuration;
-- the commands you ran and their results;
+- why the change is required;
+- what changed, including public configuration changes;
+- commands run and exact results;
 - screenshots for visible dashboard changes;
-- related issues;
-- any validation you could not run.
+- validation that could not be run.
 
-Use short conventional commit messages such as `fix: correct monthly deadline`. Keep the first line at 50 characters or fewer.
+Use a conventional commit subject of 50 characters or fewer, such as
+`fix: correct monthly deadline`. Pull requests are squash-merged after approval.
 
-Pull requests are squash-merged after approval. A passing local workflow does not replace review.
+Before requesting review, confirm names are clear, tests cover important failures, generated
+files are current, tracked values are fake, and documentation matches behavior. Keep the
+implementation small and complete.
 
-## Review checklist
+For releases, follow [RELEASING.md](RELEASING.md). When the GitHub About text, topics, or social
+preview changes, update `.github/repository-metadata.yml` and GitHub together.
 
-Before requesting review, confirm:
-
-- names explain their purpose without extra context;
-- comments explain only non-obvious behavior;
-- tests cover changed behavior and important failures;
-- the template and generated dashboard contain fake values only;
-- documentation and schema completion match the implementation.
-
-Keep the implementation small and complete. Do not add compatibility layers, unused extension points, or a second path for an existing capability.
+Next: run the clone command in step 1.

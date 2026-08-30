@@ -1,108 +1,195 @@
 # Databricks Workflow Monitoring Dashboards
 
-## Overview
+Clone the repository, then follow the five steps below. A first dev deployment takes about
+10 minutes when your Databricks profile already works.
 
-An open-source, config-based dashboard for monitoring the [Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor) that deliver your data. Define each job's expected completion time in YAML, then see which jobs met or missed their dashboard-defined SLA.
+## Start here: deploy in five steps
 
-Choose the jobs your team cares about in one YAML file. A small Python module validates the configuration and generates a Databricks AI/BI dashboard. A [Declarative Automation Bundle](https://docs.databricks.com/aws/en/dev-tools/bundles/), formerly called a Databricks Asset Bundle, deploys it across environments.
+### 1. Install
 
-```text
-workflow-monitoring.yml -> Python validator and generator -> .lvdash.json -> Databricks bundle
+You need:
+
+| Tool | Minimum |
+| --- | --- |
+| Python | 3.11 |
+| `uv` | 0.12 |
+| Databricks CLI | 1.13.0 |
+| `jq` | current |
+| `workflow-monitoring` CLI | latest release, or Go 1.25 before the first release |
+
+Install missing tools with the official guides for
+[Python](https://www.python.org/downloads/),
+[uv](https://docs.astral.sh/uv/getting-started/installation/),
+[Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install), or
+[jq](https://jqlang.org/download/).
+
+Clone the repository and install the locked Python environment:
+
+```sh
+git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
+cd databricks-workflow-monitoring-dashboards
+uv sync --locked
 ```
 
-Monitoring queries are read-only. Bundle deployment publishes or updates the dashboard and permissions. The optional demo bundle creates a disposable example job.
+After the first binary release, users do not install Go. Download the archive for your operating
+system from [GitHub Releases](https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/releases).
 
-> [!NOTE]
-> System tables are not real time. This dashboard supports operational reporting, not immediate alerting. Cost is estimated Databricks list cost and excludes negotiated discounts and classic cloud-provider VM charges.
+Apple Silicon example:
 
-## Motivation
+```sh
+repository_url="https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards"
+curl -fLO "$repository_url/releases/latest/download/workflow-monitoring-darwin-arm64.tar.gz"
+tar -xzf workflow-monitoring-darwin-arm64.tar.gz
+sudo install -m 0755 workflow-monitoring /usr/local/bin/workflow-monitoring
+workflow-monitoring --version
+```
 
-Data teams enable other teams by making trusted data available when they need it. That delivery often has a clear daily, weekly, or monthly deadline.
+If the Releases page has no CLI archive yet, build a temporary local binary:
 
-Downstream teams need to know whether the workflows that prepare their data are healthy and meeting those deadlines. Data leaders also need simple SLA metrics without asking engineers to prepare a manual status report.
+```sh
+go build -o /tmp/workflow-monitoring ./cmd/workflow-monitoring
+export PATH="/tmp:$PATH"
+workflow-monitoring --version
+```
 
-This repository turns that recurring need into a reusable Lakeflow Jobs operations dashboard. Each team chooses the workflows that matter, defines their expected completion times, and gets one shared view of job health, SLA performance, failure trends, and estimated Databricks cost.
+Docker and `act` are required only for contributor validation.
 
-The current SLA measures successful workflow completion. It does not prove that every downstream table or data product is ready.
+### 2. Select a Databricks profile
 
-## What you need
-
-| Tool | Why |
-| --- | --- |
-| `uv` 0.12 or newer | Install the locked Python environment and run commands. |
-| Databricks CLI 0.292 or newer | Discover IDs and validate or deploy the bundle. |
-| `jq` | Read CLI JSON and validate dashboard JSON. |
-| Docker and `act` | Run the repository's local validation workflows. |
-
-The project needs Python 3.11 or newer. `uv` can use an installed Python or download one when your organization allows it.
-
-## Start here
-
-You normally edit only one file:
-
-| File | What you do |
-| --- | --- |
-| `workflow-monitoring.template.yml` | Copy this tracked template before adding real values. |
-| `schema/workflow-monitoring.schema.json` | Do not edit unless the public configuration format changes. |
-| `workflow_monitoring_dashboard.py` | Edit only when changing validation or generation behavior. |
-| `src/dashboards/workflow-monitoring.scaffold.lvdash.json` | Edit only when changing dashboard SQL or layout. |
-| `src/visualizations/*.vega.json` | Edit only when changing a custom chart. |
-| `src/dashboards/workflow-monitoring.lvdash.json` | Never edit directly. The Python generator replaces it. |
-
-Bundle targets and variables live in `databricks.yml`. Python dependencies are locked in `pyproject.toml` and `uv.lock`.
-
-## Adapt it to your workflows
-
-### 1. Choose your Databricks profile
-
-List every local profile:
+List profiles, then verify the one you will use:
 
 ```sh
 databricks auth profiles
+databricks current-user me --profile <profile>
 ```
 
-Use `--profile <name>` on every live command. The project never stores or automatically selects a profile.
+Pass `--profile <profile>` to every live Databricks command. This project never selects or stores
+a profile.
 
-If the selected profile is not valid, authenticate it before continuing.
-
-### 2. Find your workspace and warehouse IDs
-
-Find the workspace ID:
+Get the three required IDs:
 
 ```sh
-databricks auth describe --profile <name> --output json \
+databricks auth describe --profile <profile> --output json \
   | jq -r '.details.configuration.workspace_id.value'
+
+databricks warehouses list --profile <profile>
+
+databricks jobs list --profile <profile>
 ```
 
-Find the default SQL warehouse:
+### 3. Create the monitoring configuration
+
+Replace the tracked fake configuration:
 
 ```sh
-databricks experimental aitools tools get-default-warehouse \
-  --profile <name>
+workflow-monitoring init \
+  --workspace-id <workspace-id> \
+  --force
+
+workflow-monitoring add \
+  --job-id <job-id> \
+  --status active \
+  --completion-time 06:00
+
+workflow-monitoring list
 ```
 
-Put the workspace ID in `workflow-monitoring.yml`. Keep the warehouse ID outside Git and pass it with `--var` when validating or deploying.
-
-### 3. Add the workflows you care about
-
-Create your ignored local configuration:
+This uses automatic storage: `workflow_monitoring.lakeflow_jobs`. If you must use existing Unity
+Catalog objects, add both flags to `init`:
 
 ```sh
-cp workflow-monitoring.template.yml workflow-monitoring.yml
+--catalog <existing-catalog> --schema <existing-schema>
 ```
 
-Then replace the inactive example in `workflow-monitoring.yml`:
+### 4. Generate and validate
+
+Generate the dashboard and collector Job, then validate the bundle:
+
+```sh
+uv run --no-dev python workflow_monitoring_dashboard.py validate
+uv run --no-dev python workflow_monitoring_dashboard.py generate
+
+databricks bundle validate --strict -t dev --profile <profile> \
+  --var="warehouse_id=<warehouse-id>"
+```
+
+Generation writes these reviewed outputs:
+
+- `src/dashboards/workflow-monitoring.lvdash.json`
+- `resources/workflow-monitoring.jobs-api.job.yml`
+
+Do not edit generated files. Edit `workflow-monitoring.yml` or the dashboard scaffold, then
+generate again.
+
+### 5. Deploy and run once
+
+Deployment writes resources to the selected workspace. Review the generated files first.
+
+```sh
+databricks bundle deploy -t dev --profile <profile> \
+  --var="warehouse_id=<warehouse-id>"
+
+databricks bundle run workflow_monitoring_jobs_api_collector \
+  -t dev --profile <profile> \
+  --var="warehouse_id=<warehouse-id>"
+```
+
+Working result: one five-minute collector Job, two governed Delta tables, and one refreshed AI/BI
+dashboard. The first collector run creates missing tables and loads Jobs API state.
+
+## What gets deployed
+
+```text
+Five-minute Lakeflow Job
+  -> Jobs API runs for configured Job IDs
+  -> two governed Delta tables
+  -> AI/BI dashboard refresh
+```
+
+The dashboard cannot run Python or call the Jobs API. The collector Job polls the API first.
+
+This repository has one monitoring path: Jobs API polling. It does not use system tables. Cost,
+compute classification, task details, parameters, identities, and notebook output are excluded.
+
+## Configuration reference
+
+### Change workflows with the CLI
+
+| Task | Command |
+| --- | --- |
+| Create configuration | `workflow-monitoring init --workspace-id <id>` |
+| List workflows | `workflow-monitoring list` |
+| Add workflow | `workflow-monitoring add --job-id <id> --completion-time <HH:MM>` |
+| Update workflow | `workflow-monitoring update <job-id> <changed flags>` |
+| Remove workflow | `workflow-monitoring remove <job-id> --yes` |
+
+Every command accepts `--config <path>`. The CLI preserves YAML comments and workflow order,
+rejects duplicate Job IDs, and validates schedule fields.
+
+### Choose storage
+
+| Mode | Configuration | Result |
+| --- | --- | --- |
+| Automatic | Omit `jobs_api_config` | Creates `workflow_monitoring.lakeflow_jobs` if missing. |
+| Bring your own | Set catalog and schema | Uses existing objects and skips namespace DDL. |
+
+Both modes create the two collector tables if missing. Providing only one storage field is
+invalid.
+
+Manual YAML editing remains supported:
 
 ```yaml
 # yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
 
-version: 1
+version: 2
+jobs_api_config:
+  catalog: workflow_monitoring
+  schema: lakeflow_jobs
 workspace_id: "1234567890123456"
 default_timezone: UTC
 
 workflows:
-  - job_name: daily_orders
-    job_id: 123456
+  - job_id: 123456
     monitoring_status: active
     sla:
       frequency: daily
@@ -110,202 +197,90 @@ workflows:
       timezone: Australia/Melbourne
 ```
 
-`job_id` is optional. Use it when possible because it stays stable if a workflow is renamed.
+Job names come from the Jobs API. Renaming a Databricks Job does not require a YAML change.
 
-### 4. Validate and generate
+### Set SLA rules
 
-Run both commands from the repository root:
-
-```sh
-uv sync --locked --no-dev
-uv run --no-dev python workflow_monitoring_dashboard.py validate
-uv run --no-dev python workflow_monitoring_dashboard.py generate
-```
-
-Your organization may commit `workflow-monitoring.yml` and the generated `.lvdash.json` to its own repository according to its security policy. Contributions to this public upstream repository must keep fake values in the example and generated dashboard.
-
-## Workflow fields
-
-| Field | Required for active workflow | Meaning |
-| --- | --- | --- |
-| `job_name` | yes | Exact Lakeflow job name shown in Databricks. |
-| `job_id` | no | Stable numeric Databricks job ID. Preferred when known. |
-| `monitoring_status` | yes | `active` includes it. `inactive` excludes it. |
-| `sla.frequency` | yes | `daily`, `weekly`, `fortnightly`, or `monthly`. |
-| `sla.completion_time` | yes | Expected completion time in `HH:MM` format. |
-| `sla.timezone` | no | IANA timezone. Uses `default_timezone` when omitted. |
-
-## Schedule examples
-
-Use only the fields shown for the selected frequency.
-
-| Frequency | Extra field | Example |
+| Frequency | Required extra field | Example |
 | --- | --- | --- |
 | Daily | none | `frequency: daily` |
 | Weekly | `day_of_week` | `day_of_week: monday` |
 | Fortnightly | `first_deadline_date` | `first_deadline_date: "2026-01-12"` |
 | Monthly | `day_of_month` | `day_of_month: 31` |
 
-A monthly day of 29, 30, or 31 uses the month's final day when the month is shorter.
+Every workflow needs `sla.completion_time` in `HH:MM`. `sla.timezone` overrides
+`default_timezone`. Monthly days 29, 30, and 31 use the final day in shorter months.
 
-Complete examples:
-
-```yaml
-# Weekly
-sla:
-  frequency: weekly
-  completion_time: "06:00"
-  day_of_week: monday
-
-# Fortnightly
-sla:
-  frequency: fortnightly
-  completion_time: "06:00"
-  first_deadline_date: "2026-01-12"
-
-# Monthly
-sla:
-  frequency: monthly
-  completion_time: "06:00"
-  # Uses February 28, February 29 in leap years, and day 30 in shorter months.
-  day_of_month: 31
-```
-
-`day_of_month` is the preferred deadline day. When that day does not exist, the deadline uses the final day of that month. For example, `day_of_month: 31` becomes February 28 in 2026, February 29 in a leap year, and April 30.
-
-## Pause monitoring without deleting configuration
-
-Set the entry to inactive:
-
-```yaml
-workflows:
-  - job_name: daily_orders
-    monitoring_status: inactive
-```
-
-Inactive entries are ignored after basic YAML parsing. They are excluded from every query, filter, KPI, cost, and active-workflow validation rule.
-
-Zero active workflows is valid. The generated dashboard returns empty results instead of failing.
-
-## How workflow resolution works
-
-1. When `job_id` exists, the dashboard resolves by ID.
-2. Without `job_id`, it searches for an exact `job_name`.
-3. Missing IDs, missing names, duplicate name matches, and ID/name mismatches appear in Configuration problems.
-4. Unresolved workflows are excluded from run, SLA, and cost metrics.
-5. Every active YAML entry still appears in Workflow health.
-
-> [!WARNING]
-> Databricks system tables are not real time. A newly created or renamed workflow and its runs may temporarily appear as `Missing job ID`, with zero run and SLA metrics. Wait for system-table ingestion and refresh the dashboard before treating this as a configuration error.
-
-## Optional disposable demo
-
-[`examples/fast-logistics`](examples/fast-logistics/README.md) is a standalone, paused-by-default job bundle for reproducing dashboard shapes without storing workspace or user information. Deploy it only when needed and destroy it afterwards.
-
-It helps data teams:
-
-- monitor selected Databricks jobs instead of every job in the workspace;
-- track daily, weekly, fortnightly, and monthly workflow SLAs;
-- investigate successful runs, failures, missed deadlines, and run duration;
-- analyse 30-day Databricks job cost using system billing tables;
-- deploy the same dashboard configuration across environments.
-
-## Dashboard views
-
-### Operations overview
-
-![Databricks jobs monitoring dashboard showing SLA KPIs, successful and failed runs, compliance trend, and workflow health](docs/images/dashboard-operations-overview.png)
-
-See current SLA compliance, today's terminal run outcomes, workflows needing attention, and workflow health at a glance.
-
-### Dashboard-defined SLA monitoring
-
-![Lakeflow Jobs SLA delivery calendar and workflow reliability visualizations](docs/images/dashboard-sla-visualizations.png)
-
-Review deadline status, delivery margin, and workflow reliability risk with custom Vega-Lite visualizations.
-
-### Workflow trends and estimated cost
-
-![Databricks workflow reliability trends, run outcomes, duration, and estimated list cost](docs/images/dashboard-trends-cost.png)
-
-Filter 30-day run outcomes, success rate, duration, and estimated Databricks list cost by workflow and compute type.
-
-## Dashboard reference
-
-### Operations page
-
-The first page answers three questions: are workflows delivering on time, what failed today, and what needs attention?
-
-| Visual | Meaning |
+| SLA status | Meaning |
 | --- | --- |
-| SLA compliance | Percentage of evaluated deadlines met during the last 30 days, compared with the 99% reference target. |
-| Successful and failed runs | Terminal run executions completed today in UTC. Success is green and failure is red. |
-| Needs attention | Active workflows with a missed SLA or configuration problem. |
-| SLA compliance trend | Daily SLA compliance during the last 30 days. |
-| Current workflow health | Green for met, amber for pending, red for missed, and purple for configuration problems. |
-| SLA delivery calendar | A 90-day status calendar with upcoming deadlines and workflow selection. |
-| Latest delivery margin | Shows how early or late each workflow delivered against its latest due deadline. |
-| Workflow reliability and cost risk | Compares 30-day run success, SLA compliance, and estimated list cost. |
-| Workflow health | Current SLA, latest run, next deadline, compute type, and configuration state. |
+| `Pending` | Deadline has not arrived and no qualifying success exists. |
+| `Met` | A successful run completed within this deadline window. |
+| `Missed` | Deadline passed without a qualifying success. |
 
-Success and failure metrics count run executions. They do not count workflow definitions. The page does not include a compute breakdown chart.
+A later success does not rewrite a historical miss.
 
-### Status colours
+Pause one workflow without deleting it:
 
-The dashboard uses the same colour for each status everywhere:
+```sh
+workflow-monitoring update <job-id> --status inactive
+uv run --no-dev python workflow_monitoring_dashboard.py generate
+```
 
-| Status | Colour | Hex value |
+Inactive workflows remain validated but are excluded from collection. Zero active workflows is
+valid and keeps the generated collector schedule paused.
+
+## Dashboard results
+
+### Operations
+
+- Workflows needing attention now
+- Runs that did not succeed today
+- Met and missed SLA deadlines
+- Late successes after missed deadlines
+- Pending, failed, or stale collector data
+
+### Trends
+
+- Run outcomes over time
+- Success rate
+- Average duration
+- Duration by workflow and run
+- Latest completed-run details
+
+## Operations reference
+
+### Collector state
+
+| Table | Key | Stores |
 | --- | --- | --- |
-| Success or SLA met | Green | `#009E73` |
-| Failure or SLA missed | Red | `#D55E00` |
-| SLA pending | Amber | `#E69F00` |
-| Configuration problem | Purple | `#7B61A8` |
-| Paused or no data | Grey | `#767676` |
+| `workflow_run_api_state` | workspace, job, run | Rolling 100-day run state |
+| `workflow_job_api_state` | workspace, job | Job name, collection times, and bounded error |
 
-Every visual also shows a text label. Colour is not the only way to understand a status.
+The collector guarantees:
 
-### Trends and cost page
+- Fixed five-minute schedule, paused when no workflows are active
+- Workspace ID verification before storage changes
+- Workspace and Job-scoped idempotent Delta `MERGE`
+- Rolling 100-day run state for the configured workspace
+- Dashboard refresh after every collection attempt
 
-The second page defaults to the last 30 days and contains:
+The collector runs as the bundle deployer unless the adopter adds bundle `run_as`. Use a service
+principal for production.
 
-1. Estimated Databricks list cost, completed runs, run success rate, and average duration.
-2. Daily run outcomes with semantic success and failure colours.
-3. Estimated cost by workflow and daily cost trend.
-4. Average run-duration trend.
-5. Latest run-duration lanes for the newest 100 filtered runs.
-6. Workflow run details.
+### Required access
 
-Cost uses `system.billing.usage` and the price active in `system.billing.list_prices`. It excludes negotiated discounts and classic cloud-provider VM charges. See the [Databricks list-cost documentation](https://docs.databricks.com/aws/en/admin/usage/system-tables).
+The run identity needs:
 
-Compute type uses billing metadata attached to each run. It shows `Unknown` when matching billing metadata has not arrived or is unavailable.
+1. Read access to configured Jobs and runs.
+2. Read and write access to the two collector tables.
+3. Refresh access to the dashboard and access to its SQL warehouse.
 
-### Custom visualizations
-
-The dashboard keeps standard cards, charts, and tables where they are clearest. Four views use Databricks custom Vega-Lite visualizations:
-
-1. SLA delivery calendar.
-2. Latest delivery margin.
-3. Workflow reliability and cost risk.
-4. Latest run-duration lanes.
-
-Their readable source files live in `src/visualizations/`. The generator serializes them into the tracked dashboard JSON. Edit the Vega-Lite file, then run `generate`. Do not edit the serialized chart inside the generated dashboard.
-
-> [!NOTE]
-> Databricks custom visualizations are in Public Preview. Test their rendering in your target workspace before relying on them for operational reporting. The built-in cards, trends, filters, and tables remain available if a custom view cannot render.
-
-## SLA meaning
-
-| Status | Meaning |
+| Storage mode | Extra Unity Catalog access |
 | --- | --- |
-| `Pending` | The deadline has not arrived and no success exists for this period. |
-| `Met` | A successful run completed after the previous deadline and by this deadline. |
-| `Missed` | The deadline passed without a qualifying success. |
+| Bring your own | `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE` |
+| Automatic | Create the default catalog, schema, and child tables |
 
-A late completion does not rewrite a historical missed period. The next deadline starts a new period.
-
-For system-table freshness and ingestion behaviour, see [Databricks system tables](https://docs.databricks.com/aws/en/admin/system-tables).
-
-## Bundle variables
+### Bundle settings
 
 | Variable | Required | Default |
 | --- | --- | --- |
@@ -313,83 +288,102 @@ For system-table freshness and ingestion behaviour, see [Databricks system table
 | `dashboard_display_name` | no | `Databricks Workflow Monitoring Dashboard` |
 | `dashboard_viewer_group` | no | `users` |
 
-The bundle uses embedded credentials and gives `CAN_READ` to the configured viewer group. The deployment identity must already be able to use the warehouse and read the required system tables.
+The dashboard uses embedded credentials and grants `CAN_READ` to the viewer group.
 
-Validate both targets before deployment:
+## Contributor validation
 
-```sh
-databricks bundle validate --strict -t dev --profile <name> \
-  --var="warehouse_id=<warehouse-id>"
-
-databricks bundle validate --strict -t prod --profile <name> \
-  --var="warehouse_id=<warehouse-id>"
-```
-
-Deployment is a separate approval:
+Fast checks:
 
 ```sh
-databricks bundle deploy -t <dev-or-prod> --profile <name> \
-  --var="warehouse_id=<warehouse-id>"
+uv lock --check
+uv run ruff format --check .
+uv run ruff check .
+uv run python -m unittest discover -s tests -v
+golangci-lint run ./...
 ```
 
-## Live validation
-
-`scripts/validate-sql-datasets.sh` sends each generated dataset query to the selected SQL warehouse. It also runs a read-only `SELECT` with fixed dates to test daily, weekly, fortnightly, monthly, month-end, and timezone calculations.
-
-It does not create dummy tables, insert rows, or change Databricks data.
-
-When the example configuration has zero active workflows, dataset results are empty. This checks SQL parsing and referenced system-table fields. It does not prove metric results for a real workflow. Add active workflows and regenerate before validating real workflow rows.
-
-## Local validation
-
-GitHub-hosted pipelines are disabled. Everything runs through local `act`.
-
-Build the runner once:
+Full local gate, usually under 2 minutes after the first run:
 
 ```sh
-docker build --platform linux/arm64 \
-  -t databricks-workflow-monitoring-dashboards-act:local \
-  -f .act/Dockerfile .
+scripts/run-local-validation.sh
 ```
 
-On an Intel or AMD machine, replace `linux/arm64` with `linux/amd64` in the build and `act` commands.
+The wrapper rebuilds one fixed image and reuses one labelled Act container while that image is
+current. It replaces a stale container and removes only unused dangling images. GitHub-hosted
+pipelines are disabled.
 
-Run local checks:
+Read-only live SQL validation:
 
 ```sh
-act --container-architecture linux/arm64 \
-  --pull=false \
-  -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-  -W .act/workflows/validate.yml
+scripts/validate-sql-datasets.sh \
+  <profile> <warehouse-id> src/dashboards/workflow-monitoring.lvdash.json
 ```
 
-Run live read-only checks:
+Empty results prove SQL parsing, referenced fields, and access. They do not prove workflow metric
+correctness.
 
-```sh
-act --container-architecture linux/arm64 \
-  --pull=false \
-  --container-options "-v ${HOME}/.databrickscfg:/root/.databrickscfg:ro -v ${HOME}/.databricks:/root/.databricks" \
-  --env DATABRICKS_AUTH_STORAGE=plaintext \
-  -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-  -W .act/workflows/databricks-validate.yml \
-  -s DATABRICKS_CONFIG_PROFILE=<name> \
-  -s DATABRICKS_WAREHOUSE_ID=<warehouse-id>
-```
+## Limits
 
-The OAuth token cache is writable because the CLI may refresh credentials. Credentials and warehouse IDs are not copied into the image or repository.
+- Five minutes is a polling target, not real time.
+- Stored run state covers 100 days; visible SLA history covers 60 days.
+- Current status includes active states; history uses terminal runs.
+- Deleted or inaccessible Jobs appear as collection errors.
+- One configuration targets one workspace.
 
-## Common errors
+## Repository map
 
-| Error | Fix |
+Configuration and deployment:
+
+| Path | Purpose |
 | --- | --- |
-| `job_name duplicates active workflow` | Keep only one active entry for that name. |
-| `job_id duplicates active workflow` | Keep only one active entry for that ID. |
-| `does not match schema` | Use editor hints or check the schedule fields above. |
-| `not an IANA timezone` | Use a name such as `UTC` or `Australia/Melbourne`. |
-| Configuration problem in dashboard | Check the job ID, exact name, and workspace ID. |
+| `workflow-monitoring.yml` | Tracked configuration with fake upstream values |
+| `cmd/workflow-monitoring` | Configuration CLI |
+| `schema/workflow-monitoring.schema.json` | YAML contract and editor hints |
+| `workflow_monitoring_dashboard.py` | Validation and generation |
 
-Do not add `.github/workflows/` or run GitHub Actions for this repository.
+Collection and dashboard:
 
-## Contributing
+| Path | Purpose |
+| --- | --- |
+| `src/collect_workflow_monitoring_jobs_api.py` | Jobs API collector |
+| `resources/workflow-monitoring.jobs-api.job.yml` | Generated collector Job |
+| `src/dashboards/workflow-monitoring.scaffold.lvdash.json` | Dashboard source |
+| `src/visualizations/*.vega.json` | Custom chart sources |
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and pull-request guidance.
+Upstream files use fake values. Adopter repositories can track their own non-secret IDs.
+
+## Troubleshooting
+
+### Setup
+
+| Problem | Fix |
+| --- | --- |
+| Configuration fails validation | Add a positive `job_id` and complete SLA fields. |
+| Automatic storage fails | Grant namespace creation rights or use existing storage. |
+| Existing storage fails | Confirm both objects exist and grant traversal plus `CREATE TABLE`. |
+| CLI is missing | Download the correct archive from GitHub Releases. |
+
+### Dashboard
+
+| Problem | Fix |
+| --- | --- |
+| Workspace ID mismatch | Copy the ID from `databricks auth describe`. |
+| Jobs API collection failed | Read the bounded error in `workflow_job_api_state`. |
+| Collection is pending | Run the collector once and confirm configured Job IDs. |
+| Data is stale | Check the collector schedule, latest run, and run identity. |
+
+## More help
+
+Repository guides:
+
+- [Fast Logistics disposable example](examples/fast-logistics/README.md)
+- [Contributing](CONTRIBUTING.md)
+- [Releasing](RELEASING.md)
+
+Databricks documentation:
+
+- [AI/BI dashboard documentation](https://docs.databricks.com/aws/en/dashboards/)
+- [Lakeflow Jobs API 2.2](https://docs.databricks.com/aws/en/reference/jobs-api-2-2-updates)
+- [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles/)
+
+Next: run the clone command in step 1.

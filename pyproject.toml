@@ -1,7 +1,7 @@
 [project]
 name = "databricks-workflow-monitoring-dashboards"
 version = "0.1.0"
-description = "Generate a Databricks jobs monitoring dashboard for workflow SLA, reliability, trends, and cost."
+description = "Generate a Jobs API-backed Databricks dashboard for workflow SLA, reliability, and trends."
 readme = "README.md"
 requires-python = ">=3.11"
 keywords = [
@@ -10,7 +10,7 @@ keywords = [
     "job-monitoring",
     "sla-monitoring",
     "workflow-dashboard",
-    "finops",
+    "jobs-api",
 ]
 dependencies = [
     "jsonschema>=4.26.0,<5.0.0",
