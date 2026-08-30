@@ -91,14 +91,11 @@ go test ./...
 Then run the required local workflow. GitHub-hosted Actions are disabled for this repository.
 
 ```sh
-act --container-architecture linux/arm64 \
-  --pull=false \
-  -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-  -W .act/workflows/validate.yml
+scripts/run-local-validation.sh
 ```
 
-Use `linux/amd64` on Intel or AMD computers. See the README for building the local runner image
-and running optional live Databricks SQL validation.
+The script chooses the host architecture, reuses the labelled local Act container, and prunes
+dangling images. See the README for the reuse rules and optional live Databricks SQL validation.
 
 Every live Databricks command must use an explicitly selected `--profile <name>`. Live validation
 and deployment are not required for ordinary contributions unless a maintainer asks for them.

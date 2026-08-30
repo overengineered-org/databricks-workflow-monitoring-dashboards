@@ -7,6 +7,11 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      GOCACHE: /tmp/workflow-monitoring-act-go-cache
+      GOMODCACHE: /tmp/workflow-monitoring-act-go-mod-cache
+      UV_CACHE_DIR: /tmp/workflow-monitoring-act-uv-cache
+      UV_PROJECT_ENVIRONMENT: /tmp/workflow-monitoring-act-venv
     steps:
       - uses: actions/checkout@v4
       - name: Verify committed Python lockfile
@@ -30,7 +35,8 @@ jobs:
           /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml init \
             --workspace-id 123456789 \
             --catalog monitoring \
-            --schema lakeflow_jobs
+            --schema lakeflow_jobs \
+            --force
           /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml add \
             --job-id 42 \
             --status active \

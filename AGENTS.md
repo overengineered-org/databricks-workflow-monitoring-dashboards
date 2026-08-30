@@ -34,21 +34,15 @@ This repository must not run pipelines on GitHub.
 - Never create or modify `.github/workflows/`.
 - Never configure GitHub Actions, run `gh workflow run`, or use a GitHub-hosted runner for validation.
 - Store local workflow definitions under `.act/workflows/`.
-- Build the repository-specific runner image from `.act/Dockerfile`:
+- Run the repository-specific local gate through its wrapper:
 
   ```sh
-  docker build --platform linux/arm64 -t databricks-workflow-monitoring-dashboards-act:local -f .act/Dockerfile .
+  scripts/run-local-validation.sh
   ```
 
-- Run workflows with local `act` and that image:
-
-  ```sh
-  act --container-architecture linux/arm64 --pull=false \
-    -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-    -W .act/workflows/validate.yml
-  ```
-
-- Replace `linux/arm64` with `linux/amd64` on Intel or AMD machines.
+- The wrapper selects ARM64 or AMD64, rebuilds the fixed local image, reuses the labelled Act
+  container while its image is current, and removes only dangling images.
+- Do not bypass the wrapper for the standard local gate.
 - Preserve the command and outcome as validation evidence.
 - If Docker, `act`, or the local image is unavailable, stop and repair the local gate. Do not substitute GitHub Actions.
 

@@ -30,19 +30,6 @@ for required_command in act docker gh git gitleaks go tar zip; do
   fi
 done
 
-case "$(uname -m)" in
-  arm64 | aarch64)
-    runner_platform="linux/arm64"
-    ;;
-  x86_64 | amd64)
-    runner_platform="linux/amd64"
-    ;;
-  *)
-    echo "unsupported release host architecture: $(uname -m)" >&2
-    exit 1
-    ;;
-esac
-
 project_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)"
 if [[ "$project_version" != "${release_tag#v}" ]]; then
   echo "pyproject.toml version $project_version does not match $release_tag" >&2
@@ -78,12 +65,7 @@ if gh release view "$release_tag" >/dev/null 2>&1; then
 fi
 
 gh auth status >/dev/null
-docker build --platform "$runner_platform" \
-  -t databricks-workflow-monitoring-dashboards-act:local \
-  -f .act/Dockerfile .
-act --container-architecture "$runner_platform" --pull=false \
-  -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-  -W .act/workflows/validate.yml
+scripts/run-local-validation.sh
 gitleaks git --redact --log-opts="--all"
 
 release_asset_directory="$(mktemp -d)"

@@ -46,6 +46,7 @@ SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.l
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
+LOCAL_VALIDATION_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/run-local-validation.sh"
 AUTOMATIC_COLLECTOR_STORAGE = CollectorStorageConfiguration(
     catalog="workflow_monitoring",
     schema="lakeflow_jobs",
@@ -1029,8 +1030,7 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertEqual(syntax_check.returncode, 0, syntax_check.stderr)
         release_script = RELEASE_SCRIPT_PATH.read_text(encoding="utf-8")
-        self.assertIn('runner_platform="linux/arm64"', release_script)
-        self.assertIn('runner_platform="linux/amd64"', release_script)
+        self.assertIn("scripts/run-local-validation.sh", release_script)
         expected_cli_targets = {
             "darwin arm64 tar.gz",
             "darwin amd64 tar.gz",
@@ -1041,6 +1041,26 @@ class RepositoryContractTests(unittest.TestCase):
         for expected_cli_target in expected_cli_targets:
             self.assertIn(f"build_cli_asset {expected_cli_target}", release_script)
         self.assertIn('"${release_assets[@]}"', release_script)
+
+        local_validation_syntax_check = subprocess.run(
+            ["bash", "-n", str(LOCAL_VALIDATION_SCRIPT_PATH)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            local_validation_syntax_check.returncode,
+            0,
+            local_validation_syntax_check.stderr,
+        )
+        local_validation_script = LOCAL_VALIDATION_SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertIn("--bind", local_validation_script)
+        self.assertIn("--reuse", local_validation_script)
+        self.assertIn("docker image prune --force --filter dangling=true", local_validation_script)
+        self.assertIn(
+            'runner_image="databricks-workflow-monitoring-dashboards-act:local"',
+            local_validation_script,
+        )
 
         help_check = subprocess.run(
             ["bash", str(RELEASE_SCRIPT_PATH), "--help"],

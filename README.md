@@ -291,16 +291,13 @@ go test ./...
 Full local gate:
 
 ```sh
-docker build --platform linux/arm64 \
-  -t databricks-workflow-monitoring-dashboards-act:local \
-  -f .act/Dockerfile .
-
-act --container-architecture linux/arm64 --pull=false \
-  -P ubuntu-latest=databricks-workflow-monitoring-dashboards-act:local \
-  -W .act/workflows/validate.yml
+scripts/run-local-validation.sh
 ```
 
-Use `linux/amd64` on Intel or AMD computers. GitHub-hosted pipelines are disabled.
+The script selects the host architecture, rebuilds one fixed local image, and reuses one labelled
+Act container while that image is unchanged. If the image changes, the script replaces the old
+container. It removes dangling images after each run but never prunes tagged or in-use images.
+GitHub-hosted pipelines are disabled.
 
 After the collector has created its tables, validate every generated dashboard query:
 
