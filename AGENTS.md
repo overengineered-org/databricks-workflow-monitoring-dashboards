@@ -63,7 +63,7 @@ This repository must not run pipelines on GitHub.
   ```
 
 - The wrapper selects the host architecture and rebuilds the fixed image.
-- It reuses the labelled Act container while its image is current.
+- It reuses the labelled Act container while its image and checkout are current.
 - It removes only dangling images.
 - Do not bypass the wrapper for the standard local gate.
 

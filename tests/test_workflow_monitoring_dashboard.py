@@ -1061,6 +1061,18 @@ class RepositoryContractTests(unittest.TestCase):
             'runner_image="databricks-workflow-monitoring-dashboards-act:local"',
             local_validation_script,
         )
+        self.assertIn(
+            'runner_repository_hash_label="org.overengineered.workflow-monitoring.repository-hash"',
+            local_validation_script,
+        )
+        self.assertIn(
+            'repository_root_hash="$(printf \'%s\' "$repository_root" | git hash-object --stdin)"',
+            local_validation_script,
+        )
+        self.assertIn(
+            '"$container_repository_root_hash" != "$repository_root_hash"',
+            local_validation_script,
+        )
 
         help_check = subprocess.run(
             ["bash", str(RELEASE_SCRIPT_PATH), "--help"],
