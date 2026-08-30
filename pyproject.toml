@@ -1,6 +1,6 @@
 [project]
 name = "databricks-workflow-monitoring-dashboards"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generate a Jobs API-backed Databricks dashboard for workflow SLA, reliability, and trends."
 readme = "README.md"
 requires-python = ">=3.11"

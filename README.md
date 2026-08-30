@@ -1,9 +1,55 @@
 # Databricks Workflow Monitoring Dashboards
 
-Clone the repository, then follow the five steps below. A first dev deployment takes about
-10 minutes when your Databricks profile already works.
+An open-source monitoring solution for selected Databricks
+[Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor). It polls the Jobs API every
+five minutes and turns job runs into one AI/BI dashboard for current health, failures, duration,
+and dashboard-defined SLA performance.
+
+## Why this exists
+
+Data teams deliver reports, models, and data products on daily, weekly, or monthly deadlines.
+One failed or late workflow can delay every team waiting for that data.
+
+Lakeflow Jobs provides run history for each job. Teams still need one curated view across the
+critical jobs that deliver their data, with a shared definition of what "on time" means. Manual
+status checks and recurring status reports do not scale.
+
+System tables are useful for historical analysis but can lag. This project uses the Jobs API for
+fresher operational status, then stores the collected state in governed Unity Catalog tables.
+
+Each team chooses the Job IDs that matter and defines their expected completion times in one
+YAML file. The repository generates and deploys the collector Job, Delta tables, and dashboard
+as one repeatable Databricks solution.
+
+## What you get
+
+- One operational view across only the Lakeflow Jobs your team selects
+- Daily, weekly, fortnightly, and monthly completion deadlines
+- Current run state, unsuccessful outcomes, duration, and collection health
+- SLA misses, late successes, reliability trends, and workflows needing attention
+- Automatic Unity Catalog storage or bring-your-own catalog and schema
+
+## How it works
+
+```text
+workflow-monitoring.yml
+  -> generates a five-minute collector Job and AI/BI dashboard
+  -> collector polls the Jobs API for configured Job IDs
+  -> writes two governed Delta state tables
+  -> refreshes the dashboard
+```
+
+The dashboard cannot run Python or call the Jobs API directly. The generated Lakeflow Job does
+that work first.
+
+The SLA means a successful job run completed before the configured deadline. It does not prove
+that every downstream table or data product is ready. Five minutes is a polling target, not
+real-time alerting. Cost, task details, parameters, identities, and notebook output are excluded.
 
 ## Start here: deploy in five steps
+
+Clone the repository, then follow these steps. A first dev deployment takes about 10 minutes
+when your Databricks profile already works.
 
 ### 1. Install
 
@@ -15,7 +61,7 @@ You need:
 | `uv` | 0.12 |
 | Databricks CLI | 1.13.0 |
 | `jq` | current |
-| `workflow-monitoring` CLI | latest release, or Go 1.25 before the first release |
+| `workflow-monitoring` CLI | current GitHub release |
 
 Install missing tools with the official guides for
 [Python](https://www.python.org/downloads/),
@@ -31,8 +77,8 @@ cd databricks-workflow-monitoring-dashboards
 uv sync --locked
 ```
 
-After the first binary release, users do not install Go. Download the archive for your operating
-system from [GitHub Releases](https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/releases).
+Download the CLI archive for your operating system from
+[GitHub Releases](https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/releases).
 
 Apple Silicon example:
 
@@ -41,14 +87,6 @@ repository_url="https://github.com/overengineered-org/databricks-workflow-monito
 curl -fLO "$repository_url/releases/latest/download/workflow-monitoring-darwin-arm64.tar.gz"
 tar -xzf workflow-monitoring-darwin-arm64.tar.gz
 sudo install -m 0755 workflow-monitoring /usr/local/bin/workflow-monitoring
-workflow-monitoring --version
-```
-
-If the Releases page has no CLI archive yet, build a temporary local binary:
-
-```sh
-go build -o /tmp/workflow-monitoring ./cmd/workflow-monitoring
-export PATH="/tmp:$PATH"
 workflow-monitoring --version
 ```
 
@@ -136,20 +174,6 @@ databricks bundle run workflow_monitoring_jobs_api_collector \
 
 Working result: one five-minute collector Job, two governed Delta tables, and one refreshed AI/BI
 dashboard. The first collector run creates missing tables and loads Jobs API state.
-
-## What gets deployed
-
-```text
-Five-minute Lakeflow Job
-  -> Jobs API runs for configured Job IDs
-  -> two governed Delta tables
-  -> AI/BI dashboard refresh
-```
-
-The dashboard cannot run Python or call the Jobs API. The collector Job polls the API first.
-
-This repository has one monitoring path: Jobs API polling. It does not use system tables. Cost,
-compute classification, task details, parameters, identities, and notebook output are excluded.
 
 ## Configuration reference
 
