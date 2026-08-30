@@ -63,7 +63,7 @@
       "scale": {
         "domain": [
           "Success",
-          "Failure"
+          "Not successful"
         ],
         "range": [
           "#009E73",

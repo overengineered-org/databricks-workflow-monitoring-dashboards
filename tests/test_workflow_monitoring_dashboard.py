@@ -8,19 +8,26 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import yaml
 
 from src.collect_workflow_monitoring_jobs_api import (
+    RUN_STATE_MERGE_BATCH_SIZE,
+    _delete_expired_run_state,
     _job_name_from_job_details,
     _last_successful_collection_by_workspace_and_job,
-    _nonterminal_run_ids_by_job,
+    _merge_job_runs_in_batches,
     _normalized_run_state,
     _prepare_collector_storage,
+    _runtime_workspace_id,
+    _stored_nonterminal_run_ids,
+    _validated_runtime_workspace_id,
 )
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
@@ -564,7 +571,10 @@ class DashboardScaffoldTests(unittest.TestCase):
                 "scale"
             ]["mappings"]
         }
-        self.assertEqual(run_outcome_colours, {"Success": "#009E73", "Failure": "#D55E00"})
+        self.assertEqual(
+            run_outcome_colours,
+            {"Success": "#009E73", "Not successful": "#D55E00"},
+        )
 
         workflow_health_colours = {
             mapping["value"]: mapping["color"]
@@ -583,6 +593,9 @@ class DashboardScaffoldTests(unittest.TestCase):
             "'SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED'",
             "late_recoveries AS",
             "run_metrics_30d AS",
+            "sequence(-1, 14)",
+            "date_sub(current_date(), 100)",
+            "unsuccessful_runs_30d",
             "{{COLLECTED_RUNS_TABLE}}",
         )
         for required_sql_fragment in required_sql_fragments:
@@ -590,6 +603,7 @@ class DashboardScaffoldTests(unittest.TestCase):
         self.assertNotIn("system.", scaffold_text)
         self.assertNotIn("date_sub(current_date(), 365)", scaffold_text)
         self.assertNotIn("date_sub(local_today, 380)", scaffold_text)
+        self.assertNotIn("FROM deadline_dates WHERE", scaffold_text)
         for stale_terminal_state in ("'ERROR'", "'TIMED_OUT'", "'BLOCKED'"):
             self.assertNotIn(stale_terminal_state, scaffold_text)
         self.assertNotIn("),\nSELECT", scaffold_text)
@@ -689,6 +703,40 @@ class JobsApiCollectorTests(unittest.TestCase):
         self.assertIn("CREATE SCHEMA IF NOT EXISTS", automatic_sql)
         self.assertEqual(automatic_sql.count("CREATE TABLE IF NOT EXISTS"), 2)
 
+    def test_runtime_workspace_and_retention_are_scoped(self) -> None:
+        workspace_id_value = SimpleNamespace(get=lambda: "111")
+        notebook_context = SimpleNamespace(workspaceId=lambda: workspace_id_value)
+        notebook_handle = SimpleNamespace(getContext=lambda: notebook_context)
+        runtime_utilities = SimpleNamespace(notebook=lambda: notebook_handle)
+        notebook_utilities = SimpleNamespace(
+            notebook=SimpleNamespace(
+                entry_point=SimpleNamespace(getDbutils=lambda: runtime_utilities)
+            )
+        )
+        self.assertEqual(_runtime_workspace_id(notebook_utilities), "111")
+        self.assertEqual(
+            _validated_runtime_workspace_id("111", notebook_utilities),
+            "111",
+        )
+        with self.assertRaisesRegex(ValueError, "does not match runtime workspace 111"):
+            _validated_runtime_workspace_id("222", notebook_utilities)
+
+        recorded_statements: list[str] = []
+        spark_session = SimpleNamespace(sql=recorded_statements.append)
+        _delete_expired_run_state(
+            spark_session,
+            "monitoring",
+            "jobs",
+            "111",
+            datetime(2026, 6, 26),
+        )
+        retention_statement = recorded_statements[0]
+        self.assertIn(
+            "DELETE FROM `monitoring`.`jobs`.`workflow_run_api_state`", retention_statement
+        )
+        self.assertIn("workspace_id = '111'", retention_statement)
+        self.assertIn("period_start_time < TIMESTAMP '2026-06-26 00:00:00'", retention_statement)
+
     def test_collector_source_is_valid_and_idempotent(self) -> None:
         collector_source = JOBS_API_COLLECTOR_PATH.read_text(encoding="utf-8")
         compile(collector_source, str(JOBS_API_COLLECTOR_PATH), "exec")
@@ -700,6 +748,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             "jobs.get(job_id=job_id)",
             "jobs.get_run(run_id=stored_run_id)",
             "INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15",
+            "RUN_STATE_MERGE_BATCH_SIZE = 500",
             "CREATE CATALOG IF NOT EXISTS",
             "CREATE SCHEMA IF NOT EXISTS",
             ".where(f\"workspace_id = '{workspace_id}'\")",
@@ -725,6 +774,36 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
         for removed_fragment in removed_complexity:
             self.assertNotIn(removed_fragment, collector_source)
+
+    def test_run_state_merges_are_memory_bounded(self) -> None:
+        job_runs = (
+            SimpleNamespace(
+                run_id=run_id,
+                start_time=1_700_000_000_000,
+                end_time=1_700_000_060_000,
+                status=SimpleNamespace(
+                    state="TERMINATED",
+                    termination_details=SimpleNamespace(code="SUCCESS"),
+                ),
+            )
+            for run_id in range(1, RUN_STATE_MERGE_BATCH_SIZE + 2)
+        )
+        with patch(
+            "src.collect_workflow_monitoring_jobs_api._merge_run_state_rows"
+        ) as merge_run_state_rows:
+            _merge_job_runs_in_batches(
+                SimpleNamespace(),
+                "`monitoring`.`jobs`.`workflow_run_api_state`",
+                "111",
+                42,
+                job_runs,
+                datetime(2026, 8, 30),
+            )
+
+        merged_batch_sizes = [
+            len(merge_call.args[2]) for merge_call in merge_run_state_rows.call_args_list
+        ]
+        self.assertEqual(merged_batch_sizes, [RUN_STATE_MERGE_BATCH_SIZE, 1])
 
     def test_current_jobs_api_status_maps_terminal_outcomes(self) -> None:
         mapping_cases = (
@@ -772,6 +851,11 @@ class JobsApiCollectorTests(unittest.TestCase):
                 job_id="42",
                 last_successful_collection_at=checkpoint_time,
             ),
+            SimpleNamespace(
+                workspace_id="111",
+                job_id="99",
+                last_successful_collection_at=checkpoint_time,
+            ),
         ]
 
         class CheckpointDataFrame:
@@ -787,6 +871,9 @@ class JobsApiCollectorTests(unittest.TestCase):
                     self.rows = [
                         row for row in self.rows if row.workspace_id == selected_workspace_id
                     ]
+                elif predicate.startswith("job_id IN"):
+                    selected_job_ids = set(re.findall(r"'([0-9]+)'", predicate))
+                    self.rows = [row for row in self.rows if row.job_id in selected_job_ids]
                 elif predicate == "last_successful_collection_at IS NOT NULL":
                     self.rows = [
                         row for row in self.rows if row.last_successful_collection_at is not None
@@ -804,10 +891,11 @@ class JobsApiCollectorTests(unittest.TestCase):
             "monitoring",
             "jobs",
             "111",
+            [42],
         )
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
 
-    def test_nonterminal_run_reconciliation_is_scoped(self) -> None:
+    def test_nonterminal_run_reconciliation_is_scoped_and_streamed(self) -> None:
         api_retention_start_at = datetime(2026, 6, 26)
 
         def run_state_row(
@@ -846,9 +934,9 @@ class JobsApiCollectorTests(unittest.TestCase):
                     self.rows = [
                         row for row in self.rows if row.workspace_id == selected_workspace_id
                     ]
-                elif predicate.startswith("job_id IN"):
-                    selected_job_ids = set(re.findall(r"'([0-9]+)'", predicate))
-                    self.rows = [row for row in self.rows if row.job_id in selected_job_ids]
+                elif predicate.startswith("job_id ="):
+                    selected_job_id = predicate.split("'")[1]
+                    self.rows = [row for row in self.rows if row.job_id == selected_job_id]
                 elif predicate.startswith("result_state NOT IN"):
                     terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
                     self.rows = [
@@ -863,21 +951,23 @@ class JobsApiCollectorTests(unittest.TestCase):
                     ]
                 return self
 
-            def collect(self) -> list[SimpleNamespace]:
-                return self.rows
+            def toLocalIterator(self) -> Iterator[SimpleNamespace]:
+                yield from self.rows
 
         spark_session = SimpleNamespace(
             table=lambda _table_name: RunStateDataFrame(run_state_rows.copy())
         )
-        nonterminal_runs = _nonterminal_run_ids_by_job(
-            spark_session,
-            "monitoring",
-            "jobs",
-            "111",
-            [42, 43],
-            api_retention_start_at,
+        nonterminal_run_ids = list(
+            _stored_nonterminal_run_ids(
+                spark_session,
+                "monitoring",
+                "jobs",
+                "111",
+                42,
+                api_retention_start_at,
+            )
         )
-        self.assertEqual(nonterminal_runs, {42: {900}})
+        self.assertEqual(nonterminal_run_ids, [900])
 
 
 class RepositoryContractTests(unittest.TestCase):
@@ -932,6 +1022,9 @@ class RepositoryContractTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(syntax_check.returncode, 0, syntax_check.stderr)
+        release_script = RELEASE_SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertIn('runner_platform="linux/arm64"', release_script)
+        self.assertIn('runner_platform="linux/amd64"', release_script)
 
         help_check = subprocess.run(
             ["bash", str(RELEASE_SCRIPT_PATH), "--help"],

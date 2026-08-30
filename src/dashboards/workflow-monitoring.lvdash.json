@@ -10,10 +10,10 @@
         "),\n",
         "-- Join configured job IDs with Jobs API metadata and collection state.\ncollected_jobs AS (\n  SELECT workspace_id, job_id, job_name, last_collection_attempt_at,\n    last_successful_collection_at, last_error_message\n  FROM `workflow_monitoring`.`lakeflow_jobs`.`workflow_job_api_state`\n  WHERE workspace_id IN (SELECT DISTINCT workspace_id FROM configured_workflows)\n),\nmonitored_workflows AS (\n  SELECT c.*, c.configured_job_id AS job_id,\n    COALESCE(collected_job.job_name, CONCAT('Job ', c.configured_job_id)) AS workflow_name,\n    CASE\n      WHEN collected_job.job_id IS NULL THEN 'Jobs API collection pending'\n      WHEN collected_job.last_error_message IS NOT NULL THEN 'Jobs API collection failed'\n      WHEN collected_job.last_successful_collection_at < current_timestamp() - INTERVAL 20 MINUTES THEN 'Jobs API data stale'\n    END AS configuration_problem\n  FROM configured_workflows c\n  LEFT JOIN collected_jobs collected_job\n    ON c.workspace_id = collected_job.workspace_id\n    AND c.configured_job_id = collected_job.job_id\n),\n",
         "workflow_runs AS (\n",
-        "  SELECT r.configured_order, r.workspace_id, r.job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
+        "  SELECT r.configured_order, r.workspace_id, r.job_id, r.timezone, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
         "  FROM monitored_workflows r INNER JOIN `workflow_monitoring`.`lakeflow_jobs`.`workflow_run_api_state` t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id\n",
         "  WHERE t.period_start_time >= date_sub(current_date(), 60)\n",
-        "  GROUP BY r.configured_order, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IS NOT NULL\n",
+        "  GROUP BY r.configured_order, r.workspace_id, r.job_id, r.timezone, t.run_id HAVING MAX(t.result_state) IS NOT NULL\n",
         "),\n",
         "latest_runs AS (\n",
         "  SELECT * FROM workflow_runs\n",
@@ -22,9 +22,9 @@
         "today_counts AS (\n",
         "  SELECT configured_order,\n",
         "    COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_today,\n",
-        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_today\n",
+        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS unsuccessful_runs_today\n",
         "  FROM workflow_runs\n",
-        "  WHERE to_date(from_utc_timestamp(run_end_time, 'UTC')) = to_date(from_utc_timestamp(current_timestamp(), 'UTC'))\n",
+        "  WHERE to_date(from_utc_timestamp(run_end_time, timezone)) = to_date(from_utc_timestamp(current_timestamp(), timezone))\n",
         "  GROUP BY configured_order\n",
         "),\n",
         "workflow_local_dates AS (\n",
@@ -72,7 +72,7 @@
         "  lr.result_state AS latest_run_result, lr.run_end_time AS latest_run_end_time, n.deadline_utc AS next_deadline_utc,\n",
         "  CASE WHEN l.deadline_status = 'Missed' THEN 'Missed' ELSE COALESCE(n.deadline_status, l.deadline_status, 'Pending') END AS sla_status,\n",
         "  CASE WHEN r.configuration_problem IS NOT NULL THEN 'Configuration problem' WHEN l.deadline_status = 'Missed' THEN 'Missed' ELSE COALESCE(n.deadline_status, l.deadline_status, 'Pending') END AS health_status,\n",
-        "  1 AS monitored_workflow_count, COALESCE(t.successful_runs_today, 0) AS successful_runs_today, COALESCE(t.failed_runs_today, 0) AS failed_runs_today,\n",
+        "  1 AS monitored_workflow_count, COALESCE(t.successful_runs_today, 0) AS successful_runs_today, COALESCE(t.unsuccessful_runs_today, 0) AS unsuccessful_runs_today,\n",
         "  CASE WHEN l.deadline_status <> 'Missed' AND COALESCE(n.deadline_status, 'Pending') = 'Pending' THEN 1 ELSE 0 END AS sla_pending_flag,\n",
         "  CASE WHEN l.deadline_status = 'Missed' THEN 1 ELSE 0 END AS sla_missed_flag,\n",
         "  CASE WHEN r.configuration_problem IS NOT NULL THEN 1 ELSE 0 END AS configuration_problem_flag,\n",
@@ -102,7 +102,7 @@
         ")\n",
         "SELECT r.workflow_name, r.job_id, r.run_id, to_date(from_utc_timestamp(r.run_end_time, 'UTC')) AS run_date, r.run_start_time, r.run_end_time,\n",
         "  unix_timestamp(r.run_end_time) - unix_timestamp(r.run_start_time) AS duration_seconds, r.result_state,\n",
-        "  CASE WHEN r.result_state = 'SUCCEEDED' THEN 'Success' ELSE 'Failure' END AS run_outcome\n",
+        "  CASE WHEN r.result_state = 'SUCCEEDED' THEN 'Success' ELSE 'Not successful' END AS run_outcome\n",
         "FROM monitored_runs r\n",
         "ORDER BY r.run_end_time DESC"
       ],
@@ -136,7 +136,7 @@
         "workflow_runs AS (\n",
         "  SELECT r.configured_order, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state\n",
         "  FROM monitored_workflows r INNER JOIN `workflow_monitoring`.`lakeflow_jobs`.`workflow_run_api_state` t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id\n",
-        "  WHERE t.period_start_time >= date_sub(current_date(), 61)\n",
+        "  WHERE t.period_start_time >= date_sub(current_date(), 100)\n",
         "  GROUP BY r.configured_order, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')\n",
         "),\n",
         "workflow_local_dates AS (\n",
@@ -148,7 +148,7 @@
         "deadline_dates AS (\n",
         "  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 61), date_add(local_today, 31))) d AS deadline_date WHERE frequency = 'daily'\n",
         "  UNION ALL\n",
-        "  SELECT w.*, date_add(date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(0, 14)) o AS offset WHERE frequency = 'weekly'\n",
+        "  SELECT w.*, date_add(date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-1, 14)) o AS offset WHERE frequency = 'weekly'\n",
         "  UNION ALL\n",
         "  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-5, 3)) o AS offset WHERE frequency = 'fortnightly'\n",
         "  UNION ALL\n",
@@ -156,7 +156,7 @@
         "),\n",
         "deadline_instants AS (\n",
         "  SELECT *, to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), timezone) AS deadline_utc\n",
-        "  FROM deadline_dates WHERE deadline_date BETWEEN date_sub(local_today, 61) AND date_add(local_today, 31)\n",
+        "  FROM deadline_dates\n",
         "),\n",
         "deadline_periods AS (\n",
         "  SELECT *,\n",
@@ -196,7 +196,7 @@
         "run_metrics_30d AS (\n",
         "  SELECT configured_order, COUNT(DISTINCT run_id) AS total_runs_30d,\n",
         "    COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_30d,\n",
-        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS failed_runs_30d,\n",
+        "    COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS unsuccessful_runs_30d,\n",
         "    AVG(unix_timestamp(run_end_time) - unix_timestamp(run_start_time)) AS average_duration_seconds_30d\n",
         "  FROM workflow_runs WHERE run_end_time >= date_sub(current_date(), 30) GROUP BY configured_order\n",
         "),\n",
@@ -217,9 +217,9 @@
         "  TRY_DIVIDE(r.successful_runs_30d, r.total_runs_30d) AS run_success_rate_30d,\n",
         "  TRY_DIVIDE(s.met_deadlines_30d, s.evaluated_deadlines_30d) AS sla_compliance_rate_30d,\n",
         "  r.average_duration_seconds_30d,\n",
-        "  COALESCE(r.total_runs_30d, 0) AS total_runs_30d, COALESCE(r.failed_runs_30d, 0) AS failed_runs_30d,\n",
+        "  COALESCE(r.total_runs_30d, 0) AS total_runs_30d, COALESCE(r.unsuccessful_runs_30d, 0) AS unsuccessful_runs_30d,\n",
         "  COALESCE(s.evaluated_deadlines_30d, 0) AS evaluated_deadlines_30d, COALESCE(s.missed_deadlines_30d, 0) AS missed_deadlines_30d,\n",
-        "  CASE WHEN COALESCE(s.missed_deadlines_30d, 0) > 0 AND COALESCE(r.failed_runs_30d, 0) > 0 THEN 'Critical' WHEN COALESCE(s.missed_deadlines_30d, 0) > 0 OR COALESCE(r.failed_runs_30d, 0) > 0 THEN 'Needs attention' ELSE 'Healthy' END AS attention_level\n",
+        "  CASE WHEN COALESCE(s.missed_deadlines_30d, 0) > 0 AND COALESCE(r.unsuccessful_runs_30d, 0) > 0 THEN 'Critical' WHEN COALESCE(s.missed_deadlines_30d, 0) > 0 OR COALESCE(r.unsuccessful_runs_30d, 0) > 0 THEN 'Needs attention' ELSE 'Healthy' END AS attention_level\n",
         "FROM deadline_results d\n",
         "LEFT JOIN run_metrics_30d r ON d.configured_order = r.configured_order\n",
         "LEFT JOIN sla_metrics_30d s ON d.configured_order = s.configured_order\n",
@@ -449,7 +449,7 @@
         },
         {
           "widget": {
-            "name": "failed-runs-today",
+            "name": "unsuccessful-runs-today",
             "queries": [
               {
                 "name": "main_query",
@@ -457,8 +457,8 @@
                   "datasetName": "workflow_status",
                   "fields": [
                     {
-                      "name": "sum(failed_runs_today)",
-                      "expression": "SUM(`failed_runs_today`)"
+                      "name": "sum(unsuccessful_runs_today)",
+                      "expression": "SUM(`unsuccessful_runs_today`)"
                     }
                   ],
                   "disaggregated": false
@@ -470,13 +470,13 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "sum(failed_runs_today)",
-                  "displayName": "Failed runs today"
+                  "fieldName": "sum(unsuccessful_runs_today)",
+                  "displayName": "Unsuccessful runs today"
                 }
               },
               "frame": {
                 "showTitle": true,
-                "title": "Failed runs today"
+                "title": "Unsuccessful runs today"
               }
             }
           },
@@ -947,8 +947,8 @@
                       "expression": "`total_runs_30d`"
                     },
                     {
-                      "name": "failed_runs_30d",
-                      "expression": "`failed_runs_30d`"
+                      "name": "unsuccessful_runs_30d",
+                      "expression": "`unsuccessful_runs_30d`"
                     },
                     {
                       "name": "evaluated_deadlines_30d",
@@ -972,7 +972,7 @@
               "widgetType": "custom-vega-viz",
               "jsonSpec": {
                 "type": "vega-lite",
-                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Combines run reliability, SLA compliance, and duration for each workflow.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.due_deadline_recency == 1 && isValid(datum.run_success_rate_30d) && isValid(datum.sla_compliance_rate_30d)\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"circle\",\"filled\":true,\"opacity\":0.82,\"strokeWidth\":1},\"encoding\":{\"x\":{\"field\":\"run_success_rate_30d\",\"type\":\"quantitative\",\"title\":\"Run success rate, 30 days\",\"scale\":{\"domain\":[0,1]},\"axis\":{\"format\":\".0%\"}},\"y\":{\"field\":\"sla_compliance_rate_30d\",\"type\":\"quantitative\",\"title\":\"SLA compliance, 30 days\",\"scale\":{\"domain\":[0,1]},\"axis\":{\"format\":\".0%\"}},\"size\":{\"field\":\"average_duration_seconds_30d\",\"type\":\"quantitative\",\"title\":\"Average duration\",\"scale\":{\"range\":[140,1200]}},\"color\":{\"field\":\"attention_level\",\"type\":\"nominal\",\"title\":\"Attention\",\"scale\":{\"domain\":[\"Healthy\",\"Needs attention\",\"Critical\"],\"range\":[\"#009E73\",\"#E69F00\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"run_success_rate_30d\",\"type\":\"quantitative\",\"title\":\"Run success rate\",\"format\":\".1%\"},{\"field\":\"sla_compliance_rate_30d\",\"type\":\"quantitative\",\"title\":\"SLA compliance\",\"format\":\".1%\"},{\"field\":\"average_duration_seconds_30d\",\"type\":\"quantitative\",\"title\":\"Average duration (seconds)\",\"format\":\",.0f\"},{\"field\":\"total_runs_30d\",\"type\":\"quantitative\",\"title\":\"Completed runs\"},{\"field\":\"failed_runs_30d\",\"type\":\"quantitative\",\"title\":\"Failed runs\"},{\"field\":\"evaluated_deadlines_30d\",\"type\":\"quantitative\",\"title\":\"Evaluated deadlines\"},{\"field\":\"missed_deadlines_30d\",\"type\":\"quantitative\",\"title\":\"Missed deadlines\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Combines run reliability, SLA compliance, and duration for each workflow.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"filter\":\"datum.due_deadline_recency == 1 && isValid(datum.run_success_rate_30d) && isValid(datum.sla_compliance_rate_30d)\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"circle\",\"filled\":true,\"opacity\":0.82,\"strokeWidth\":1},\"encoding\":{\"x\":{\"field\":\"run_success_rate_30d\",\"type\":\"quantitative\",\"title\":\"Run success rate, 30 days\",\"scale\":{\"domain\":[0,1]},\"axis\":{\"format\":\".0%\"}},\"y\":{\"field\":\"sla_compliance_rate_30d\",\"type\":\"quantitative\",\"title\":\"SLA compliance, 30 days\",\"scale\":{\"domain\":[0,1]},\"axis\":{\"format\":\".0%\"}},\"size\":{\"field\":\"average_duration_seconds_30d\",\"type\":\"quantitative\",\"title\":\"Average duration\",\"scale\":{\"range\":[140,1200]}},\"color\":{\"field\":\"attention_level\",\"type\":\"nominal\",\"title\":\"Attention\",\"scale\":{\"domain\":[\"Healthy\",\"Needs attention\",\"Critical\"],\"range\":[\"#009E73\",\"#E69F00\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"run_success_rate_30d\",\"type\":\"quantitative\",\"title\":\"Run success rate\",\"format\":\".1%\"},{\"field\":\"sla_compliance_rate_30d\",\"type\":\"quantitative\",\"title\":\"SLA compliance\",\"format\":\".1%\"},{\"field\":\"average_duration_seconds_30d\",\"type\":\"quantitative\",\"title\":\"Average duration (seconds)\",\"format\":\",.0f\"},{\"field\":\"total_runs_30d\",\"type\":\"quantitative\",\"title\":\"Completed runs\"},{\"field\":\"unsuccessful_runs_30d\",\"type\":\"quantitative\",\"title\":\"Unsuccessful runs\"},{\"field\":\"evaluated_deadlines_30d\",\"type\":\"quantitative\",\"title\":\"Evaluated deadlines\"},{\"field\":\"missed_deadlines_30d\",\"type\":\"quantitative\",\"title\":\"Missed deadlines\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
               },
               "encodings": {
                 "fields": [
@@ -995,7 +995,7 @@
                     "fieldName": "total_runs_30d"
                   },
                   {
-                    "fieldName": "failed_runs_30d"
+                    "fieldName": "unsuccessful_runs_30d"
                   },
                   {
                     "fieldName": "evaluated_deadlines_30d"
@@ -1572,7 +1572,7 @@
                         "color": "#009E73"
                       },
                       {
-                        "value": "Failure",
+                        "value": "Not successful",
                         "color": "#D55E00"
                       }
                     ]
@@ -1582,7 +1582,7 @@
               "frame": {
                 "showTitle": true,
                 "title": "Daily run outcomes",
-                "description": "Successful runs are green. Every terminal failure state is red.",
+                "description": "Successful runs are green. Every terminal non-success state is red.",
                 "showDescription": true
               }
             }
@@ -1705,7 +1705,7 @@
               "widgetType": "custom-vega-viz",
               "jsonSpec": {
                 "type": "vega-lite",
-                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Shows the latest workflow runs as duration bars across time.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"window\":[{\"op\":\"row_number\",\"as\":\"run_rank\"}],\"sort\":[{\"field\":\"run_start_time\",\"order\":\"descending\"}]},{\"filter\":\"datum.run_rank <= 100\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"bar\",\"cornerRadius\":3,\"opacity\":0.88},\"encoding\":{\"x\":{\"field\":\"run_start_time\",\"type\":\"temporal\",\"title\":\"Run time (UTC)\"},\"x2\":{\"field\":\"run_end_time\"},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"run_outcome\",\"type\":\"nominal\",\"title\":\"Outcome\",\"scale\":{\"domain\":[\"Success\",\"Failure\"],\"range\":[\"#009E73\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"run_id\",\"type\":\"nominal\",\"title\":\"Run ID\"},{\"field\":\"run_start_time\",\"type\":\"temporal\",\"title\":\"Started\"},{\"field\":\"run_end_time\",\"type\":\"temporal\",\"title\":\"Completed\"},{\"field\":\"duration_seconds\",\"type\":\"quantitative\",\"title\":\"Duration (seconds)\",\"format\":\",.0f\"},{\"field\":\"result_state\",\"type\":\"nominal\",\"title\":\"Result\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"description\":\"Shows the latest workflow runs as duration bars across time.\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"transform\":[{\"window\":[{\"op\":\"row_number\",\"as\":\"run_rank\"}],\"sort\":[{\"field\":\"run_start_time\",\"order\":\"descending\"}]},{\"filter\":\"datum.run_rank <= 100\"}],\"params\":[{\"name\":\"databricks_mark_selection\",\"select\":{\"type\":\"point\",\"fields\":[\"workflow_name\"]}}],\"mark\":{\"type\":\"bar\",\"cornerRadius\":3,\"opacity\":0.88},\"encoding\":{\"x\":{\"field\":\"run_start_time\",\"type\":\"temporal\",\"title\":\"Run time (UTC)\"},\"x2\":{\"field\":\"run_end_time\"},\"y\":{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":null,\"sort\":\"ascending\"},\"color\":{\"field\":\"run_outcome\",\"type\":\"nominal\",\"title\":\"Outcome\",\"scale\":{\"domain\":[\"Success\",\"Not successful\"],\"range\":[\"#009E73\",\"#D55E00\"]}},\"tooltip\":[{\"field\":\"workflow_name\",\"type\":\"nominal\",\"title\":\"Workflow\"},{\"field\":\"run_id\",\"type\":\"nominal\",\"title\":\"Run ID\"},{\"field\":\"run_start_time\",\"type\":\"temporal\",\"title\":\"Started\"},{\"field\":\"run_end_time\",\"type\":\"temporal\",\"title\":\"Completed\"},{\"field\":\"duration_seconds\",\"type\":\"quantitative\",\"title\":\"Duration (seconds)\",\"format\":\",.0f\"},{\"field\":\"result_state\",\"type\":\"nominal\",\"title\":\"Result\"}]},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}}}"
               },
               "encodings": {
                 "fields": [

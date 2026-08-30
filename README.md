@@ -1,6 +1,6 @@
 # Databricks Workflow Monitoring Dashboards
 
-Monitor selected Lakeflow Jobs, their SLAs, failures, and duration with fresher Jobs API data.
+Monitor selected Lakeflow Jobs, their SLAs, outcomes, and duration with fresher Jobs API data.
 
 ## What gets deployed
 
@@ -11,9 +11,12 @@ Five-minute Lakeflow Job
   -> AI/BI dashboard refresh
 ```
 
-The dashboard cannot run Python or call the Jobs API. The generated collector Job does that work first.
+The dashboard cannot run Python or call the Jobs API. The generated collector Job does that
+work first.
 
-This project has one monitoring path: Jobs API polling. It has no system-table dependency. Cost, compute classification, task details, parameters, identities, and notebook output are intentionally excluded.
+This project has one monitoring path: Jobs API polling. It has no system-table dependency.
+Cost, compute classification, task details, parameters, identities, and notebook output are
+intentionally excluded.
 
 ## Quick start
 
@@ -127,15 +130,19 @@ databricks bundle run workflow_monitoring_jobs_api_collector \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-The first successful run prepares storage according to the selected mode and creates the two
-collector tables. The generated schedule stays paused when no workflows are active.
+The first collector run prepares storage according to the selected mode and creates the two
+collector tables.
+
+If any workflow is active, deployment creates an unpaused five-minute schedule. To deploy
+without automatic runs, keep every workflow inactive and generate again. The schedule then
+stays paused.
 
 ## What the dashboard answers
 
 ### Operations
 
 - Which workflows need attention now?
-- What failed today?
+- What did not succeed today in each workflow's timezone?
 - Which SLA deadlines were met or missed?
 - Did a late success recover a missed deadline?
 - Is collector data pending, failed, or stale?
@@ -180,25 +187,26 @@ workflows:
       completion_time: "06:00"
 ```
 
-Inactive entries remain fully validated but are excluded from collection and dashboard generation. Zero active workflows is valid.
+Inactive entries remain fully validated but are excluded from collection and dashboard
+generation. Zero active workflows is valid.
 
 ## Collector state
 
 | Table | Key | Stores |
 | --- | --- | --- |
-| `workflow_run_api_state` | workspace, job, run | Start, end, normalized current state |
-| `workflow_job_api_state` | workspace, job | Current Job name, last attempt, success, and sanitized error |
+| `workflow_run_api_state` | workspace, job, run | Rolling 100-day start, end, and normalized current state |
+| `workflow_job_api_state` | workspace, job | Current Job name, last attempt, success, and bounded error |
 
 Collector guarantees:
 
 - fixed five-minute schedule, paused when no workflows are active
-- workspace and job-scoped checkpoints
-- up to 60 days of first-run history
-- idempotent Delta `MERGE`
-- no raw API payload persistence
-- dashboard refresh after every collection attempt
+- runtime workspace ID verification before storage changes
+- workspace and job-scoped checkpoints with idempotent Delta `MERGE`
+- rolling 100-day run state, pruned only for the current workspace
+- no raw API payload persistence; dashboard refresh after every attempt
 
-The collector runs as the bundle deployer unless the adopter adds bundle `run_as`. Use a service principal for production.
+The collector runs as the bundle deployer unless the adopter adds bundle `run_as`. Use a
+service principal for production.
 
 Required identity access:
 
@@ -261,8 +269,7 @@ This is read-only. Empty results prove SQL parsing, fields, and access, not real
 ## Limits
 
 - Five minutes is a polling target, not real time.
-- The first collection backfills at most 60 days.
-- Run and SLA history show the most recent 60 days.
+- Collection and stored run state cover 100 days. Visible SLA history covers 60 days.
 - Current status includes active lifecycle states. History and SLA metrics use terminal runs.
 - A deleted or inaccessible Job appears as a collection error.
 - One configuration targets one workspace.
@@ -279,7 +286,8 @@ This is read-only. Empty results prove SQL parsing, fields, and access, not real
 | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` | Dashboard SQL and layout source |
 | `src/visualizations/*.vega.json` | Readable custom chart sources |
 
-The public configuration and generated deployment files use fake values. Adopter repositories can track their own non-secret IDs.
+The public configuration and generated deployment files use fake values. Adopter repositories
+can track their own non-secret IDs.
 
 ## Troubleshooting
 
@@ -288,12 +296,17 @@ The public configuration and generated deployment files use fake values. Adopter
 | Workflow fails schema validation | Add a positive `job_id` and complete SLA fields. |
 | Automatic storage setup fails | Grant catalog and schema creation rights, or configure existing storage. |
 | Bring-your-own storage fails | Confirm both objects exist and grant `USE CATALOG`, `USE SCHEMA`, and `CREATE TABLE`. |
-| `Jobs API collection failed` | Read the sanitized error in `workflow_job_api_state`. |
+| `Jobs API collection failed` | Read the bounded error in `workflow_job_api_state`. |
+| Workspace ID mismatch | Replace `workspace_id` with the ID reported by the selected profile. |
 | Dashboard shows collection pending | Run the collector once, then confirm its Job ID list. |
 | Dashboard shows stale data | Check collector schedule, latest run, and run identity. |
 
-The [`examples/fast-logistics`](examples/fast-logistics/README.md) bundle has exact commands to deploy, run, inspect, and remove paused disposable test jobs.
+The [`examples/fast-logistics`](examples/fast-logistics/README.md) bundle has exact commands to
+deploy, run, inspect, and remove paused disposable test jobs.
 
-Official references: [AI/BI dashboards](https://docs.databricks.com/aws/en/dashboards/), [Lakeflow Jobs API 2.2](https://docs.databricks.com/aws/en/reference/jobs-api-2-2-updates), and [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles/).
+Official references: [AI/BI dashboards](https://docs.databricks.com/aws/en/dashboards/),
+[Lakeflow Jobs API 2.2](https://docs.databricks.com/aws/en/reference/jobs-api-2-2-updates),
+and [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles/).
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for changes and [`RELEASING.md`](RELEASING.md) for local SemVer releases.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for changes and
+[`RELEASING.md`](RELEASING.md) for local SemVer releases.

@@ -115,9 +115,9 @@
         "title": "Completed runs"
       },
       {
-        "field": "failed_runs_30d",
+        "field": "unsuccessful_runs_30d",
         "type": "quantitative",
-        "title": "Failed runs"
+        "title": "Unsuccessful runs"
       },
       {
         "field": "evaluated_deadlines_30d",

@@ -1,8 +1,11 @@
 # Fast Logistics example
 
-This disposable four-job example creates the outcome, recovery, late-delivery, and duration shapes used by the workflow-monitoring dashboard.
+This disposable four-job example creates the outcome, recovery, late-delivery, and duration
+shapes used by the workflow-monitoring dashboard.
 
-It contains no workspace URL, workspace ID, job ID, user name, profile name, or credential. Jobs deploy with schedules paused. Nothing runs until you explicitly trigger a job or unpause a schedule.
+It contains no workspace URL, workspace ID, job ID, user name, profile name, or credential. Jobs
+deploy with schedules paused. Nothing runs until you explicitly trigger a job or unpause a
+schedule.
 
 ## Deploy
 
@@ -46,4 +49,6 @@ When finished, remove the disposable resources:
 databricks bundle destroy --auto-approve -t dev --profile <profile>
 ```
 
-To monitor these jobs, use the IDs shown by `bundle summary` in the root `workflow-monitoring.yml`, then generate and deploy the monitoring bundle separately. Job names come from the Jobs API.
+To monitor these jobs, use the IDs shown by `bundle summary` in the root
+`workflow-monitoring.yml`. Then generate and deploy the monitoring bundle separately. Job names
+come from the Jobs API.
