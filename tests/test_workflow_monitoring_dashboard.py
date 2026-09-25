@@ -71,6 +71,34 @@ class ExpectedMissingRun(Exception):
     """Stand in for the Jobs SDK's ResourceDoesNotExist error."""
 
 
+class StoredRunStateDataFrame:
+    """Apply the collector's Spark filters to in-memory run rows."""
+
+    def __init__(self, run_state_rows: list[SimpleNamespace]) -> None:
+        self.rows = run_state_rows
+
+    def where(self, predicate: str) -> StoredRunStateDataFrame:
+        if predicate.startswith("workspace_id ="):
+            workspace_id = predicate.split("'")[1]
+            self.rows = [row for row in self.rows if row.workspace_id == workspace_id]
+        elif predicate.startswith("job_id ="):
+            job_id = predicate.split("'")[1]
+            self.rows = [row for row in self.rows if row.job_id == job_id]
+        elif predicate.startswith("period_start_time >= TIMESTAMP"):
+            api_history_start_at = datetime.fromisoformat(predicate.split("'")[1])
+            self.rows = [row for row in self.rows if row.period_start_time >= api_history_start_at]
+        elif predicate.startswith("result_state NOT IN"):
+            terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
+            self.rows = [row for row in self.rows if row.result_state not in terminal_states]
+        return self
+
+    def select(self, *_column_names: str) -> StoredRunStateDataFrame:
+        return self
+
+    def toLocalIterator(self) -> Iterator[SimpleNamespace]:
+        yield from self.rows
+
+
 class ConfigurationTests(unittest.TestCase):
     """Check every public schedule and important invalid input."""
 
@@ -1254,43 +1282,11 @@ class JobsApiCollectorTests(unittest.TestCase):
             run_state_row("222", "42", 902, "RUNNING"),
             run_state_row("111", "99", 903, "RUNNING"),
             run_state_row("111", "42", 904, "RUNNING", datetime(2026, 6, 25)),
+            run_state_row("111", "42", 905, "RUNNING", api_history_start_at),
         ]
 
-        class RunStateDataFrame:
-            def __init__(self, rows: list[SimpleNamespace]) -> None:
-                self.rows = rows
-
-            def select(self, *_column_names: str) -> RunStateDataFrame:
-                return self
-
-            def where(self, predicate: str) -> RunStateDataFrame:
-                if predicate.startswith("workspace_id ="):
-                    selected_workspace_id = predicate.split("'")[1]
-                    self.rows = [
-                        row for row in self.rows if row.workspace_id == selected_workspace_id
-                    ]
-                elif predicate.startswith("job_id ="):
-                    selected_job_id = predicate.split("'")[1]
-                    self.rows = [row for row in self.rows if row.job_id == selected_job_id]
-                elif predicate.startswith("result_state NOT IN"):
-                    terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
-                    self.rows = [
-                        row for row in self.rows if row.result_state not in terminal_states
-                    ]
-                elif predicate.startswith("period_start_time >= TIMESTAMP"):
-                    selected_history_start_at = datetime.fromisoformat(predicate.split("'")[1])
-                    self.rows = [
-                        row
-                        for row in self.rows
-                        if row.period_start_time >= selected_history_start_at
-                    ]
-                return self
-
-            def toLocalIterator(self) -> Iterator[SimpleNamespace]:
-                yield from self.rows
-
         spark_session = SimpleNamespace(
-            table=lambda _table_name: RunStateDataFrame(run_state_rows.copy())
+            table=lambda _table_name: StoredRunStateDataFrame(run_state_rows.copy())
         )
         nonterminal_run_ids = list(
             _stored_nonterminal_run_ids(
@@ -1302,7 +1298,7 @@ class JobsApiCollectorTests(unittest.TestCase):
                 api_history_start_at,
             )
         )
-        self.assertEqual(nonterminal_run_ids, [900])
+        self.assertEqual(nonterminal_run_ids, [900, 905])
 
     def _collect_with_stored_run_scenario(
         self,
@@ -1320,35 +1316,6 @@ class JobsApiCollectorTests(unittest.TestCase):
             )
             for run_id, age_days in ((700, 75), (800, 10), (900, 2))
         }
-
-        class StoredRunDataFrame:
-            def __init__(self) -> None:
-                self.rows = list(stored_run_rows.values())
-
-            def where(self, predicate: str) -> StoredRunDataFrame:
-                if predicate.startswith("workspace_id ="):
-                    self.rows = [
-                        row for row in self.rows if row.workspace_id == predicate.split("'")[1]
-                    ]
-                elif predicate.startswith("job_id ="):
-                    self.rows = [row for row in self.rows if row.job_id == predicate.split("'")[1]]
-                elif predicate.startswith("period_start_time >= TIMESTAMP"):
-                    history_start_at = datetime.fromisoformat(predicate.split("'")[1])
-                    self.rows = [
-                        row for row in self.rows if row.period_start_time >= history_start_at
-                    ]
-                elif predicate.startswith("result_state NOT IN"):
-                    terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
-                    self.rows = [
-                        row for row in self.rows if row.result_state not in terminal_states
-                    ]
-                return self
-
-            def select(self, *_column_names: str) -> StoredRunDataFrame:
-                return self
-
-            def toLocalIterator(self) -> Iterator[SimpleNamespace]:
-                yield from self.rows
 
         def job_run(run_id: int, age_days: int) -> SimpleNamespace:
             run_start_at = (collection_time - timedelta(days=age_days)).replace(tzinfo=UTC)
@@ -1404,7 +1371,9 @@ class JobsApiCollectorTests(unittest.TestCase):
                 entry_point=SimpleNamespace(getDbutils=lambda: runtime_utilities)
             ),
         )
-        spark_session = SimpleNamespace(table=lambda _table_name: StoredRunDataFrame())
+        spark_session = SimpleNamespace(
+            table=lambda _table_name: StoredRunStateDataFrame(list(stored_run_rows.values()))
+        )
         deleted_run_state_cutoffs: list[datetime] = []
         job_state_updates: list[dict[str, Any]] = []
 
