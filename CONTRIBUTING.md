@@ -21,6 +21,9 @@ before creating the branch.
 Codex reads `AGENTS.md`. `CLAUDE.md` imports that same file for Claude Code, including versions
 that do not load `AGENTS.md` directly. Start either agent from the repository root. Keep project
 rules in `AGENTS.md`, not in two separate copies.
+The Codex project environment is defined in `.codex/environments/environment.toml`. It runs
+`uv sync --locked` when Codex creates a worktree and exposes Bootstrap, Smoke checks, and Full
+local gate actions. The full gate uses the same wrapper as section 3.
 
 The local checks need the Python and `uv` versions in [README step 1](README.md#1-clone-and-prepare)
 and Go 1.25 or newer. The required local Act gate also needs Git, `act`, and a running Docker
