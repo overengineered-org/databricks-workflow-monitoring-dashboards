@@ -11,7 +11,8 @@ from typing import Any
 
 RUN_STATE_TABLE_NAME = "workflow_run_api_state"
 JOB_STATE_TABLE_NAME = "workflow_job_api_state"
-JOBS_API_RETENTION_DAYS = 100
+RUN_STATE_RETENTION_DAYS = 100
+JOBS_API_HISTORY_DAYS = 60
 INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15
 RUN_STATE_MERGE_BATCH_SIZE = 500
 UNITY_CATALOG_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
@@ -337,7 +338,7 @@ def _stored_nonterminal_run_ids(
     schema_name: str,
     workspace_id: str,
     job_id: int,
-    api_retention_start_at: datetime,
+    api_history_start_at: datetime,
 ) -> Iterator[int]:
     run_state_table = _qualified_table_name(
         catalog_name,
@@ -345,18 +346,33 @@ def _stored_nonterminal_run_ids(
         RUN_STATE_TABLE_NAME,
     )
     terminal_state_sql = ", ".join(f"'{run_state}'" for run_state in sorted(TERMINAL_RUN_STATES))
-    api_retention_start_sql = api_retention_start_at.isoformat(sep=" ")
+    api_history_start_sql = api_history_start_at.isoformat(sep=" ")
     stored_nonterminal_run_rows = (
         spark_session.table(run_state_table)
         .where(f"workspace_id = '{workspace_id}'")
         .where(f"job_id = '{job_id}'")
-        .where(f"period_start_time >= TIMESTAMP '{api_retention_start_sql}'")
+        .where(f"period_start_time >= TIMESTAMP '{api_history_start_sql}'")
         .where(f"result_state NOT IN ({terminal_state_sql})")
         .select("run_id")
         .toLocalIterator()
     )
     for stored_nonterminal_run_row in stored_nonterminal_run_rows:
         yield int(stored_nonterminal_run_row.run_id)
+
+
+def _retrievable_stored_job_runs(
+    jobs_api_client: Any, stored_run_ids: Iterable[int]
+) -> Iterator[Any]:
+    from databricks.sdk.errors import ResourceDoesNotExist  # type: ignore[import-not-found]
+
+    for stored_run_id in stored_run_ids:
+        try:
+            yield jobs_api_client.jobs.get_run(run_id=stored_run_id)
+        except ResourceDoesNotExist as missing_run_error:
+            print(
+                f"Stored run ID {stored_run_id} unavailable (RESOURCE_DOES_NOT_EXIST): "
+                f"{_bounded_error_message(missing_run_error)}"
+            )
 
 
 def _delete_expired_run_state(
@@ -410,7 +426,8 @@ def main() -> None:
     )
     jobs_api_client = WorkspaceClient()
     collection_started_at = datetime.now(UTC).replace(tzinfo=None)
-    retention_start_at = collection_started_at - timedelta(days=JOBS_API_RETENTION_DAYS)
+    run_state_retention_start_at = collection_started_at - timedelta(days=RUN_STATE_RETENTION_DAYS)
+    api_history_start_at = collection_started_at - timedelta(days=JOBS_API_HISTORY_DAYS)
     run_state_table = _qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME)
     job_state_table = _qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME)
     _delete_expired_run_state(
@@ -418,7 +435,7 @@ def main() -> None:
         catalog_name,
         schema_name,
         workspace_id,
-        retention_start_at,
+        run_state_retention_start_at,
     )
     last_success_by_workspace_and_job = _last_successful_collection_by_workspace_and_job(
         spark_session,
@@ -439,10 +456,10 @@ def main() -> None:
                 jobs_api_client.jobs.get(job_id=job_id),
             )
             previous_success_at = last_success_by_workspace_and_job.get((workspace_id, str(job_id)))
-            incremental_start_at = retention_start_at
+            incremental_start_at = api_history_start_at
             if previous_success_at is not None:
                 incremental_start_at = max(
-                    retention_start_at,
+                    api_history_start_at,
                     previous_success_at - timedelta(minutes=INCREMENTAL_COLLECTION_OVERLAP_MINUTES),
                 )
             _merge_job_runs_in_batches(
@@ -476,16 +493,16 @@ def main() -> None:
                 run_state_table,
                 workspace_id,
                 job_id,
-                (
-                    jobs_api_client.jobs.get_run(run_id=stored_run_id)
-                    for stored_run_id in _stored_nonterminal_run_ids(
+                _retrievable_stored_job_runs(
+                    jobs_api_client,
+                    _stored_nonterminal_run_ids(
                         spark_session,
                         catalog_name,
                         schema_name,
                         workspace_id,
                         job_id,
-                        retention_start_at,
-                    )
+                        api_history_start_at,
+                    ),
                 ),
                 job_collection_attempt_at,
             )
