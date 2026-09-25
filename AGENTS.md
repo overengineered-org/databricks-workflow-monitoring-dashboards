@@ -79,4 +79,25 @@ GitHub Actions. Preserve the wrapper command and outcome as evidence.
 - Keep names intention-revealing and domain-specific.
 - Fix all issues found during the session, while keeping unrelated scope explicit.
 
+## Review and simplification
+
+Apply these checks to implementation and code review before calling work ready:
+
+1. Trace the requirement through inputs, execution, stored or generated output, and consumers.
+   Map each acceptance criterion to code and a verification result.
+2. Run focused tests and `scripts/run-local-validation.sh`. For affected Go code, also run
+   `go vet ./...` and `go test -race ./...`. For affected Python code, inspect targeted
+   correctness and maintainability lint findings. Record any check not run.
+3. Scan affected code for unused symbols and unreachable paths; scan the whole repository
+   when the review scope is repository-wide. Use available dead-code analyzers and `rg` to
+   check callers, dynamic entry points, generated assets, tests, and documentation before
+   deleting a candidate.
+4. Look for duplicate paths, pass-through layers, speculative configuration, and helpers
+   with no current consumer. Simplify only when the result stays clear and preserves explicit
+   domain validation and failure behavior. Treat broad lint, complexity, and coverage results
+   as leads to investigate, not automatic refactor orders.
+5. Classify findings as fixed, retained with reason, false positive, or blocked. Record
+   commands, results, and proof scope, including subprocess coverage gaps. Separate tool or
+   environment failures from code failures.
+
 Next: verify the repository state before editing.
