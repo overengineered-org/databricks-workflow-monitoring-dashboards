@@ -1,0 +1,20 @@
+version = 1
+name = "databricks-workflow-monitoring-local"
+
+[setup]
+script = "uv sync --locked"
+
+[[actions]]
+name = "Bootstrap"
+icon = "tool"
+command = "uv sync --locked"
+
+[[actions]]
+name = "Smoke checks"
+icon = "tool"
+command = "uv run ruff format --check . && uv run ruff check . && uv run python -m unittest discover -s tests -v && go test ./... && uv run python workflow_monitoring_dashboard.py validate"
+
+[[actions]]
+name = "Full local gate"
+icon = "tool"
+command = "scripts/run-local-validation.sh"

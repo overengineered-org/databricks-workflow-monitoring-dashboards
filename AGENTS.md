@@ -1,6 +1,7 @@
 # Agent guide
 
 Read this guide before changing repository files.
+Use `CONTRIBUTING.md` for local setup and validation commands.
 
 ## Personal Git strategy
 
