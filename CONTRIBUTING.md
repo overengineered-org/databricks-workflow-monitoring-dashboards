@@ -5,16 +5,44 @@ Use this guide when changing the repository. To configure and deploy the dashboa
 
 ## 1. Prepare the change
 
-Complete [README step 1](README.md#1-clone-and-prepare), then create a focused branch:
+From a fresh clone, create a focused branch:
 
 ```sh
-git switch main
-git pull --ff-only
+git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
+cd databricks-workflow-monitoring-dashboards
 git switch -c <feat-or-fix>/<short-name>
 ```
 
-Use `feat/`, `fix/`, `docs/`, or `chore/`. Go 1.25 and golangci-lint 2.12.2 are needed only for
-configuration CLI changes.
+Use `feat/`, `fix/`, `docs/`, or `chore/`. In an existing clone, update from `origin/main`
+before creating the branch.
+
+### Local agent setup (macOS and Linux)
+
+Codex reads `AGENTS.md`. `CLAUDE.md` imports that same file for Claude Code, including versions
+that do not load `AGENTS.md` directly. Start either agent from the repository root. Keep project
+rules in `AGENTS.md`, not in two separate copies.
+
+The local checks need the Python and `uv` versions in [README step 1](README.md#1-clone-and-prepare)
+and Go 1.25 or newer. The required local Act gate also needs Git, `act`, and a running Docker
+daemon. Start Docker Desktop on macOS or the Docker daemon on Linux before running the gate.
+The Act image supplies `golangci-lint`, `jq`, and the pinned Databricks CLI; they are not host
+setup requirements for this gate.
+
+From the repository root, prepare the ignored Python environment and check the other local
+prerequisites:
+
+```sh
+uv sync --locked
+go version
+act --version
+docker info >/dev/null
+```
+
+Run the smoke checks and full gate in [section 3](#3-validate). No Databricks workspace login or
+profile is needed for these local checks. Live Databricks validation is separate and requires a
+profile chosen by the user. If Docker or `act` is unavailable, repair it and report the local
+gate as not run. If no profile is chosen, report live validation as not run; never select one
+automatically.
 
 Before a large behavior, configuration, or dashboard design change:
 
@@ -58,8 +86,8 @@ Use targeted checks while editing:
 uv run ruff format --check .
 uv run ruff check .
 uv run python -m unittest discover -s tests -v
-golangci-lint run ./...
 go test ./...
+uv run python workflow_monitoring_dashboard.py validate
 ```
 
 Before opening a pull request, run the required local gate:
