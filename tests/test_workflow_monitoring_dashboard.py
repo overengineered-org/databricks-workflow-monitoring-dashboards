@@ -32,7 +32,7 @@ from src.collect_workflow_monitoring_jobs_api import (
     _normalized_run_state,
     _prepare_collector_storage,
     _runtime_workspace_id,
-    _stored_nonterminal_run_ids,
+    _stored_nonterminal_run_ids_for_reconciliation,
     _validated_runtime_workspace_id,
 )
 from workflow_monitoring_dashboard import (
@@ -87,6 +87,9 @@ class StoredRunStateDataFrame:
         elif predicate.startswith("period_start_time >= TIMESTAMP"):
             api_history_start_at = datetime.fromisoformat(predicate.split("'")[1])
             self.rows = [row for row in self.rows if row.period_start_time >= api_history_start_at]
+        elif predicate.startswith("period_start_time < TIMESTAMP"):
+            incremental_start_at = datetime.fromisoformat(predicate.split("'")[1])
+            self.rows = [row for row in self.rows if row.period_start_time < incremental_start_at]
         elif predicate.startswith("result_state NOT IN"):
             terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
             self.rows = [row for row in self.rows if row.result_state not in terminal_states]
@@ -1108,6 +1111,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             'RUN_STATE_TABLE_NAME = "workflow_run_api_state"',
             'JOB_STATE_TABLE_NAME = "workflow_job_api_state"',
             "active_only=True",
+            "completed_only=True",
             "jobs.get(job_id=job_id)",
             "jobs.get_run(run_id=stored_run_id)",
             "INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15",
@@ -1258,15 +1262,16 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
 
-    def test_nonterminal_run_reconciliation_is_scoped_and_streamed(self) -> None:
+    def test_nonterminal_reconciliation_uses_only_unlisted_history_gap(self) -> None:
         api_history_start_at = datetime(2026, 6, 26)
+        incremental_start_at = datetime(2026, 8, 24)
 
         def run_state_row(
             workspace_id: str,
             job_id: str,
             run_id: int,
             result_state: str,
-            period_start_time: datetime = datetime(2026, 8, 24),
+            period_start_time: datetime = datetime(2026, 8, 23),
         ) -> SimpleNamespace:
             return SimpleNamespace(
                 workspace_id=workspace_id,
@@ -1283,19 +1288,21 @@ class JobsApiCollectorTests(unittest.TestCase):
             run_state_row("111", "99", 903, "RUNNING"),
             run_state_row("111", "42", 904, "RUNNING", datetime(2026, 6, 25)),
             run_state_row("111", "42", 905, "RUNNING", api_history_start_at),
+            run_state_row("111", "42", 906, "RUNNING", incremental_start_at),
         ]
 
         spark_session = SimpleNamespace(
             table=lambda _table_name: StoredRunStateDataFrame(run_state_rows.copy())
         )
         nonterminal_run_ids = list(
-            _stored_nonterminal_run_ids(
+            _stored_nonterminal_run_ids_for_reconciliation(
                 spark_session,
                 "monitoring",
                 "jobs",
                 "111",
                 42,
                 api_history_start_at,
+                incremental_start_at,
             )
         )
         self.assertEqual(nonterminal_run_ids, [900, 905])
@@ -1316,16 +1323,33 @@ class JobsApiCollectorTests(unittest.TestCase):
             )
             for run_id, age_days in ((700, 75), (800, 10), (900, 2))
         }
+        stored_run_rows[950] = SimpleNamespace(
+            workspace_id="111",
+            job_id="42",
+            run_id=950,
+            period_start_time=collection_time - timedelta(minutes=10),
+            result_state="RUNNING",
+        )
 
-        def job_run(run_id: int, age_days: int) -> SimpleNamespace:
+        def job_run(
+            run_id: int,
+            age_days: int,
+            lifecycle_state: str = "TERMINATED",
+        ) -> SimpleNamespace:
             run_start_at = (collection_time - timedelta(days=age_days)).replace(tzinfo=UTC)
             return SimpleNamespace(
                 run_id=run_id,
                 start_time=int(run_start_at.timestamp() * 1000),
-                end_time=int((run_start_at + timedelta(minutes=1)).timestamp() * 1000),
+                end_time=(
+                    int((run_start_at + timedelta(minutes=1)).timestamp() * 1000)
+                    if lifecycle_state == "TERMINATED"
+                    else None
+                ),
                 status=SimpleNamespace(
-                    state="TERMINATED",
-                    termination_details=SimpleNamespace(code="SUCCESS"),
+                    state=lifecycle_state,
+                    termination_details=(
+                        SimpleNamespace(code="SUCCESS") if lifecycle_state == "TERMINATED" else None
+                    ),
                 ),
             )
 
@@ -1341,15 +1365,17 @@ class JobsApiCollectorTests(unittest.TestCase):
             get=Mock(return_value=SimpleNamespace(settings=SimpleNamespace(name="Daily Orders"))),
             list_runs=Mock(
                 side_effect=lambda **options: (
-                    [] if options.get("active_only") else [job_run(1000, 0)]
+                    [job_run(950, 0, "RUNNING")]
+                    if options.get("active_only")
+                    else [job_run(1000, 0)]
                 )
             ),
             get_run=Mock(side_effect=retrieve_stored_run),
         )
-        jobs_api_client = SimpleNamespace(jobs=jobs_api)
+        workspace_client = SimpleNamespace(jobs=jobs_api)
         sdk_module = ModuleType("databricks.sdk")
         sdk_module.__path__ = []
-        sdk_module.WorkspaceClient = lambda: jobs_api_client
+        sdk_module.WorkspaceClient = lambda: workspace_client
         sdk_errors_module = ModuleType("databricks.sdk.errors")
         sdk_errors_module.ResourceDoesNotExist = ExpectedMissingRun
         databricks_module = ModuleType("databricks")
@@ -1412,7 +1438,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             patch.object(
                 collector,
                 "_last_successful_collection_by_workspace_and_job",
-                return_value={("111", "42"): collection_time - timedelta(days=65)},
+                return_value={("111", "42"): collection_time - timedelta(minutes=5)},
             ),
             patch.object(collector, "_merge_run_state_rows", side_effect=merge_run_rows),
             patch.object(collector, "_merge_job_state_rows", side_effect=merge_job_rows),
@@ -1440,9 +1466,11 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
         self.assertIsNone(collection.collection_error)
         self.assertEqual(collection.retrieved_run_ids, [800, 900])
+        self.assertNotIn(950, collection.retrieved_run_ids)
         self.assertEqual(collection.stored_run_rows[700].result_state, "RUNNING")
         self.assertEqual(collection.stored_run_rows[800].result_state, "RUNNING")
         self.assertEqual(collection.stored_run_rows[900].result_state, "SUCCEEDED")
+        self.assertEqual(collection.stored_run_rows[950].result_state, "RUNNING")
         self.assertEqual(collection.stored_run_rows[1000].result_state, "SUCCEEDED")
         self.assertIn("Stored run ID 800 unavailable", collection.collector_output)
         self.assertIn("RESOURCE_DOES_NOT_EXIST", collection.collector_output)
@@ -1464,8 +1492,13 @@ class JobsApiCollectorTests(unittest.TestCase):
         requested_start_at = datetime.fromtimestamp(
             collection.list_runs_requests[0].kwargs["start_time_from"] / 1000, tz=UTC
         ).replace(tzinfo=None)
+        self.assertEqual(len(collection.list_runs_requests), 2)
+        self.assertTrue(collection.list_runs_requests[0].kwargs["completed_only"])
+        self.assertNotIn("active_only", collection.list_runs_requests[0].kwargs)
+        self.assertTrue(collection.list_runs_requests[1].kwargs["active_only"])
+        self.assertNotIn("completed_only", collection.list_runs_requests[1].kwargs)
         self.assertLess(
-            abs(collection.collection_time - requested_start_at - timedelta(days=60)),
+            abs(collection.collection_time - requested_start_at - timedelta(minutes=20)),
             timedelta(minutes=1),
         )
 
