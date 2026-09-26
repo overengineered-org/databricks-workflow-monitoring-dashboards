@@ -24,8 +24,9 @@ import yaml
 
 from src import collect_workflow_monitoring_jobs_api as collector
 from src.collect_workflow_monitoring_jobs_api import (
-    RUN_STATE_MERGE_BATCH_SIZE,
+    RUN_STATE_WRITE_BATCH_SIZE,
     _delete_expired_run_state,
+    _delete_unretrievable_run_state,
     _job_name_from_job_details,
     _last_successful_collection_by_workspace_and_job,
     _merge_job_runs_in_batches,
@@ -85,8 +86,8 @@ class StoredRunStateDataFrame:
             job_id = predicate.split("'")[1]
             self.rows = [row for row in self.rows if row.job_id == job_id]
         elif predicate.startswith("period_start_time >= TIMESTAMP"):
-            api_history_start_at = datetime.fromisoformat(predicate.split("'")[1])
-            self.rows = [row for row in self.rows if row.period_start_time >= api_history_start_at]
+            run_history_start_at = datetime.fromisoformat(predicate.split("'")[1])
+            self.rows = [row for row in self.rows if row.period_start_time >= run_history_start_at]
         elif predicate.startswith("period_start_time < TIMESTAMP"):
             incremental_start_at = datetime.fromisoformat(predicate.split("'")[1])
             self.rows = [row for row in self.rows if row.period_start_time < incremental_start_at]
@@ -1103,6 +1104,32 @@ class JobsApiCollectorTests(unittest.TestCase):
         self.assertIn("workspace_id = '111'", retention_statement)
         self.assertIn("period_start_time < TIMESTAMP '2026-06-26 00:00:00'", retention_statement)
 
+    def test_unretrievable_run_deletion_is_scoped_and_batched(self) -> None:
+        recorded_statements: list[str] = []
+        spark_session = SimpleNamespace(sql=recorded_statements.append)
+        _delete_unretrievable_run_state(
+            spark_session,
+            "`monitoring`.`jobs`.`workflow_run_api_state`",
+            "111",
+            42,
+            [],
+        )
+        self.assertEqual(recorded_statements, [])
+
+        _delete_unretrievable_run_state(
+            spark_session,
+            "`monitoring`.`jobs`.`workflow_run_api_state`",
+            "111",
+            42,
+            list(range(1, RUN_STATE_WRITE_BATCH_SIZE + 2)),
+        )
+        missing_run_statement = recorded_statements[0]
+        self.assertIn("workspace_id = '111'", missing_run_statement)
+        self.assertIn("job_id = '42'", missing_run_statement)
+        self.assertIn("run_id IN (1, 2, 3", missing_run_statement)
+        self.assertTrue(missing_run_statement.endswith("499, 500)"))
+        self.assertTrue(recorded_statements[1].endswith("run_id IN (501)"))
+
     def test_collector_source_is_valid_and_idempotent(self) -> None:
         collector_source = JOBS_API_COLLECTOR_PATH.read_text(encoding="utf-8")
         compile(collector_source, str(JOBS_API_COLLECTOR_PATH), "exec")
@@ -1110,12 +1137,13 @@ class JobsApiCollectorTests(unittest.TestCase):
         required_collector_fragments = (
             'RUN_STATE_TABLE_NAME = "workflow_run_api_state"',
             'JOB_STATE_TABLE_NAME = "workflow_job_api_state"',
+            "RUN_HISTORY_RETENTION_DAYS = 60",
             "active_only=True",
             "completed_only=True",
             "jobs.get(job_id=job_id)",
             "jobs.get_run(run_id=stored_run_id)",
             "INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15",
-            "RUN_STATE_MERGE_BATCH_SIZE = 500",
+            "RUN_STATE_WRITE_BATCH_SIZE = 500",
             "CREATE CATALOG IF NOT EXISTS",
             "CREATE SCHEMA IF NOT EXISTS",
             ".where(f\"workspace_id = '{workspace_id}'\")",
@@ -1138,6 +1166,9 @@ class JobsApiCollectorTests(unittest.TestCase):
             "run_page_url",
             "collected_at",
             'getattr(job_run, "state"',
+            "RUN_STATE_RETENTION_DAYS",
+            "JOBS_API_HISTORY_DAYS",
+            '"STALE"',
         )
         for removed_fragment in removed_complexity:
             self.assertNotIn(removed_fragment, collector_source)
@@ -1153,7 +1184,7 @@ class JobsApiCollectorTests(unittest.TestCase):
                     termination_details=SimpleNamespace(code="SUCCESS"),
                 ),
             )
-            for run_id in range(1, RUN_STATE_MERGE_BATCH_SIZE + 2)
+            for run_id in range(1, RUN_STATE_WRITE_BATCH_SIZE + 2)
         )
         with patch(
             "src.collect_workflow_monitoring_jobs_api._merge_run_state_rows"
@@ -1170,7 +1201,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         merged_batch_sizes = [
             len(merge_call.args[2]) for merge_call in merge_run_state_rows.call_args_list
         ]
-        self.assertEqual(merged_batch_sizes, [RUN_STATE_MERGE_BATCH_SIZE, 1])
+        self.assertEqual(merged_batch_sizes, [RUN_STATE_WRITE_BATCH_SIZE, 1])
 
     def test_current_jobs_api_status_maps_terminal_outcomes(self) -> None:
         mapping_cases = (
@@ -1263,7 +1294,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
 
     def test_nonterminal_reconciliation_uses_only_unlisted_history_gap(self) -> None:
-        api_history_start_at = datetime(2026, 6, 26)
+        run_history_start_at = datetime(2026, 6, 26)
         incremental_start_at = datetime(2026, 8, 24)
 
         def run_state_row(
@@ -1287,7 +1318,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             run_state_row("222", "42", 902, "RUNNING"),
             run_state_row("111", "99", 903, "RUNNING"),
             run_state_row("111", "42", 904, "RUNNING", datetime(2026, 6, 25)),
-            run_state_row("111", "42", 905, "RUNNING", api_history_start_at),
+            run_state_row("111", "42", 905, "RUNNING", run_history_start_at),
             run_state_row("111", "42", 906, "RUNNING", incremental_start_at),
         ]
 
@@ -1301,7 +1332,7 @@ class JobsApiCollectorTests(unittest.TestCase):
                 "jobs",
                 "111",
                 42,
-                api_history_start_at,
+                run_history_start_at,
                 incremental_start_at,
             )
         )
@@ -1309,8 +1340,10 @@ class JobsApiCollectorTests(unittest.TestCase):
 
     def _collect_with_stored_run_scenario(
         self,
-        missing_run_error: Exception,
+        first_stored_run_error: Exception,
         run_merge_error: Exception | None = None,
+        run_delete_error: Exception | None = None,
+        later_run_error: Exception | None = None,
     ) -> SimpleNamespace:
         collection_time = datetime.now(UTC).replace(tzinfo=None)
         stored_run_rows = {
@@ -1358,7 +1391,9 @@ class JobsApiCollectorTests(unittest.TestCase):
         def retrieve_stored_run(*, run_id: int) -> SimpleNamespace:
             retrieved_run_ids.append(run_id)
             if run_id == 800:
-                raise missing_run_error
+                raise first_stored_run_error
+            if run_id == 900 and later_run_error is not None:
+                raise later_run_error
             return job_run(run_id, 2)
 
         jobs_api = SimpleNamespace(
@@ -1401,7 +1436,28 @@ class JobsApiCollectorTests(unittest.TestCase):
             table=lambda _table_name: StoredRunStateDataFrame(list(stored_run_rows.values()))
         )
         deleted_run_state_cutoffs: list[datetime] = []
+        deleted_unretrievable_run_ids: list[int] = []
         job_state_updates: list[dict[str, Any]] = []
+
+        def delete_expired_run_state(*args: Any) -> None:
+            retention_start_at = args[-1]
+            deleted_run_state_cutoffs.append(retention_start_at)
+            for stored_run_id, stored_run_row in list(stored_run_rows.items()):
+                if stored_run_row.period_start_time < retention_start_at:
+                    stored_run_rows.pop(stored_run_id)
+
+        def delete_unretrievable_run_state(
+            _spark_session: Any,
+            _qualified_table_name: str,
+            _workspace_id: str,
+            _job_id: int,
+            unretrievable_run_ids: list[int],
+        ) -> None:
+            if run_delete_error is not None:
+                raise run_delete_error
+            deleted_unretrievable_run_ids.extend(unretrievable_run_ids)
+            for unretrievable_run_id in unretrievable_run_ids:
+                stored_run_rows.pop(unretrievable_run_id)
 
         def merge_run_rows(
             _spark_session: Any, _qualified_table_name: str, incoming_rows: list[dict[str, Any]]
@@ -1433,7 +1489,12 @@ class JobsApiCollectorTests(unittest.TestCase):
             patch.object(
                 collector,
                 "_delete_expired_run_state",
-                side_effect=lambda *args: deleted_run_state_cutoffs.append(args[-1]),
+                side_effect=delete_expired_run_state,
+            ),
+            patch.object(
+                collector,
+                "_delete_unretrievable_run_state",
+                side_effect=delete_unretrievable_run_state,
             ),
             patch.object(
                 collector,
@@ -1456,23 +1517,25 @@ class JobsApiCollectorTests(unittest.TestCase):
             retrieved_run_ids=retrieved_run_ids,
             list_runs_requests=jobs_api.list_runs.call_args_list,
             deleted_run_state_cutoffs=deleted_run_state_cutoffs,
+            deleted_unretrievable_run_ids=deleted_unretrievable_run_ids,
             job_state_updates=job_state_updates,
             collector_output=collector_output.getvalue(),
         )
 
-    def test_expired_and_missing_runs_do_not_block_newer_state_or_checkpoint(self) -> None:
+    def test_expired_and_missing_runs_are_removed_without_blocking_collection(self) -> None:
         collection = self._collect_with_stored_run_scenario(
             ExpectedMissingRun("run expired or deleted")
         )
         self.assertIsNone(collection.collection_error)
         self.assertEqual(collection.retrieved_run_ids, [800, 900])
         self.assertNotIn(950, collection.retrieved_run_ids)
-        self.assertEqual(collection.stored_run_rows[700].result_state, "RUNNING")
-        self.assertEqual(collection.stored_run_rows[800].result_state, "RUNNING")
+        self.assertNotIn(700, collection.stored_run_rows)
+        self.assertNotIn(800, collection.stored_run_rows)
+        self.assertEqual(collection.deleted_unretrievable_run_ids, [800])
         self.assertEqual(collection.stored_run_rows[900].result_state, "SUCCEEDED")
         self.assertEqual(collection.stored_run_rows[950].result_state, "RUNNING")
         self.assertEqual(collection.stored_run_rows[1000].result_state, "SUCCEEDED")
-        self.assertIn("Stored run ID 800 unavailable", collection.collector_output)
+        self.assertIn("Removing unavailable stored run ID 800", collection.collector_output)
         self.assertIn("RESOURCE_DOES_NOT_EXIST", collection.collector_output)
         self.assertIn("run expired or deleted", collection.collector_output)
         self.assertGreater(
@@ -1485,7 +1548,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             abs(
                 collection.collection_time
                 - collection.deleted_run_state_cutoffs[0]
-                - timedelta(days=100)
+                - timedelta(days=60)
             ),
             timedelta(minutes=1),
         )
@@ -1503,20 +1566,42 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
 
     def test_unexpected_api_and_storage_errors_fail_collection(self) -> None:
-        for unexpected_error, run_merge_error in (
-            (RuntimeError("Jobs API unavailable"), None),
-            (ExpectedMissingRun("run expired or deleted"), OSError("Delta merge failed")),
+        for unexpected_error, run_merge_error, run_delete_error in (
+            (RuntimeError("Jobs API unavailable"), None, None),
+            (ExpectedMissingRun("run expired or deleted"), OSError("Delta merge failed"), None),
+            (ExpectedMissingRun("run expired or deleted"), None, OSError("Delta delete failed")),
         ):
-            with self.subTest(error=str(unexpected_error), storage_error=str(run_merge_error)):
+            with self.subTest(
+                error=str(unexpected_error),
+                merge_error=str(run_merge_error),
+                delete_error=str(run_delete_error),
+            ):
                 collection = self._collect_with_stored_run_scenario(
-                    unexpected_error, run_merge_error
+                    unexpected_error,
+                    run_merge_error,
+                    run_delete_error,
                 )
                 self.assertRegex(str(collection.collection_error), "failed for job IDs: 42")
                 self.assertIsNone(collection.job_state_updates[-1]["last_successful_collection_at"])
-                expected_error = run_merge_error or unexpected_error
+                expected_error = run_merge_error or run_delete_error or unexpected_error
                 self.assertIn(
                     str(expected_error), collection.job_state_updates[-1]["last_error_message"]
                 )
+
+    def test_confirmed_missing_run_is_removed_before_later_api_failure(self) -> None:
+        collection = self._collect_with_stored_run_scenario(
+            ExpectedMissingRun("run expired or deleted"),
+            later_run_error=RuntimeError("later Jobs API failure"),
+        )
+
+        self.assertRegex(str(collection.collection_error), "failed for job IDs: 42")
+        self.assertEqual(collection.retrieved_run_ids, [800, 900])
+        self.assertNotIn(800, collection.stored_run_rows)
+        self.assertEqual(collection.deleted_unretrievable_run_ids, [800])
+        self.assertIn(
+            "later Jobs API failure",
+            collection.job_state_updates[-1]["last_error_message"],
+        )
 
 
 class SqlValidationScriptTests(unittest.TestCase):

@@ -191,10 +191,10 @@ day in shorter months.
 3. Grant dashboard refresh access and SQL warehouse access.
 4. Confirm the viewer group in the bundle settings.
 
-Five minutes is a polling target, not real-time alerting. Run state is retained for 100 days;
-Jobs API reconciliation uses its 60-day run history. Stored nonterminal runs the API no longer
-returns remain unchanged until local retention expires. Visible SLA history covers 60 days. Cost,
-task details, parameters, identities, and notebook output are outside this dashboard's scope.
+Five minutes is a polling target, not real-time alerting. Run state follows the 60-day Jobs API
+history window. Runs outside that window, or no longer returned by the API, are removed instead of
+being shown with stale state. Visible SLA history covers 60 days. Cost, task details, parameters,
+identities, and notebook output are outside this dashboard's scope.
 
 ## Troubleshooting
 
