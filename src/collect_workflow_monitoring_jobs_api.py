@@ -11,9 +11,9 @@ from typing import Any
 
 RUN_STATE_TABLE_NAME = "workflow_run_api_state"
 JOB_STATE_TABLE_NAME = "workflow_job_api_state"
-JOBS_API_RETENTION_DAYS = 100
+RUN_HISTORY_RETENTION_DAYS = 60
 INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15
-RUN_STATE_MERGE_BATCH_SIZE = 500
+RUN_STATE_WRITE_BATCH_SIZE = 500
 UNITY_CATALOG_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 WORKSPACE_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 SUCCESS_TERMINATION_CODES = {"SUCCESS"}
@@ -240,7 +240,7 @@ def _merge_job_runs_in_batches(
     run_state_batch: list[dict[str, Any]] = []
     for job_run in job_runs:
         run_state_batch.append(_run_state_row(workspace_id, job_id, job_run, collection_attempt_at))
-        if len(run_state_batch) == RUN_STATE_MERGE_BATCH_SIZE:
+        if len(run_state_batch) == RUN_STATE_WRITE_BATCH_SIZE:
             _merge_run_state_rows(spark_session, qualified_table_name, run_state_batch)
             run_state_batch = []
     _merge_run_state_rows(spark_session, qualified_table_name, run_state_batch)
@@ -331,13 +331,14 @@ def _last_successful_collection_by_workspace_and_job(
     }
 
 
-def _stored_nonterminal_run_ids(
+def _stored_nonterminal_run_ids_for_reconciliation(
     spark_session: Any,
     catalog_name: str,
     schema_name: str,
     workspace_id: str,
     job_id: int,
-    api_retention_start_at: datetime,
+    run_history_start_at: datetime,
+    incremental_start_at: datetime,
 ) -> Iterator[int]:
     run_state_table = _qualified_table_name(
         catalog_name,
@@ -345,18 +346,39 @@ def _stored_nonterminal_run_ids(
         RUN_STATE_TABLE_NAME,
     )
     terminal_state_sql = ", ".join(f"'{run_state}'" for run_state in sorted(TERMINAL_RUN_STATES))
-    api_retention_start_sql = api_retention_start_at.isoformat(sep=" ")
+    run_history_start_sql = run_history_start_at.isoformat(sep=" ")
+    incremental_start_sql = incremental_start_at.isoformat(sep=" ")
     stored_nonterminal_run_rows = (
         spark_session.table(run_state_table)
         .where(f"workspace_id = '{workspace_id}'")
         .where(f"job_id = '{job_id}'")
-        .where(f"period_start_time >= TIMESTAMP '{api_retention_start_sql}'")
+        .where(f"period_start_time >= TIMESTAMP '{run_history_start_sql}'")
+        .where(f"period_start_time < TIMESTAMP '{incremental_start_sql}'")
         .where(f"result_state NOT IN ({terminal_state_sql})")
         .select("run_id")
         .toLocalIterator()
     )
     for stored_nonterminal_run_row in stored_nonterminal_run_rows:
         yield int(stored_nonterminal_run_row.run_id)
+
+
+def _retrievable_stored_job_runs(
+    workspace_client: Any,
+    stored_run_ids: Iterable[int],
+    unretrievable_run_ids: list[int],
+) -> Iterator[Any]:
+    from databricks.sdk.errors import ResourceDoesNotExist  # type: ignore[import-not-found]
+
+    for stored_run_id in stored_run_ids:
+        try:
+            yield workspace_client.jobs.get_run(run_id=stored_run_id)
+        except ResourceDoesNotExist as missing_run_error:
+            unretrievable_run_ids.append(stored_run_id)
+            print(
+                f"Removing unavailable stored run ID {stored_run_id} "
+                f"(RESOURCE_DOES_NOT_EXIST): "
+                f"{_bounded_error_message(missing_run_error)}"
+            )
 
 
 def _delete_expired_run_state(
@@ -372,6 +394,26 @@ def _delete_expired_run_state(
         f"WHERE workspace_id = '{workspace_id}' "
         f"AND period_start_time < TIMESTAMP '{retention_start_sql}'"
     )
+
+
+def _delete_unretrievable_run_state(
+    spark_session: Any,
+    qualified_table_name: str,
+    workspace_id: str,
+    job_id: int,
+    unretrievable_run_ids: list[int],
+) -> None:
+    if not unretrievable_run_ids:
+        return
+    for batch_start in range(0, len(unretrievable_run_ids), RUN_STATE_WRITE_BATCH_SIZE):
+        run_id_batch = unretrievable_run_ids[batch_start : batch_start + RUN_STATE_WRITE_BATCH_SIZE]
+        run_id_sql = ", ".join(str(run_id) for run_id in run_id_batch)
+        spark_session.sql(
+            f"DELETE FROM {qualified_table_name} "
+            f"WHERE workspace_id = '{workspace_id}' "
+            f"AND job_id = '{job_id}' "
+            f"AND run_id IN ({run_id_sql})"
+        )
 
 
 def main() -> None:
@@ -408,9 +450,9 @@ def main() -> None:
         schema_name,
         create_catalog_and_schema_if_missing,
     )
-    jobs_api_client = WorkspaceClient()
+    workspace_client = WorkspaceClient()
     collection_started_at = datetime.now(UTC).replace(tzinfo=None)
-    retention_start_at = collection_started_at - timedelta(days=JOBS_API_RETENTION_DAYS)
+    run_history_start_at = collection_started_at - timedelta(days=RUN_HISTORY_RETENTION_DAYS)
     run_state_table = _qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME)
     job_state_table = _qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME)
     _delete_expired_run_state(
@@ -418,7 +460,7 @@ def main() -> None:
         catalog_name,
         schema_name,
         workspace_id,
-        retention_start_at,
+        run_history_start_at,
     )
     last_success_by_workspace_and_job = _last_successful_collection_by_workspace_and_job(
         spark_session,
@@ -436,25 +478,27 @@ def main() -> None:
         try:
             job_name = _job_name_from_job_details(
                 job_id,
-                jobs_api_client.jobs.get(job_id=job_id),
+                workspace_client.jobs.get(job_id=job_id),
             )
             previous_success_at = last_success_by_workspace_and_job.get((workspace_id, str(job_id)))
-            incremental_start_at = retention_start_at
+            incremental_start_at = run_history_start_at
             if previous_success_at is not None:
                 incremental_start_at = max(
-                    retention_start_at,
+                    run_history_start_at,
                     previous_success_at - timedelta(minutes=INCREMENTAL_COLLECTION_OVERLAP_MINUTES),
                 )
+            unretrievable_run_ids: list[int] = []
             _merge_job_runs_in_batches(
                 spark_session,
                 run_state_table,
                 workspace_id,
                 job_id,
-                jobs_api_client.jobs.list_runs(
+                workspace_client.jobs.list_runs(
                     job_id=job_id,
                     start_time_from=int(
                         incremental_start_at.replace(tzinfo=UTC).timestamp() * 1000
                     ),
+                    completed_only=True,
                     expand_tasks=False,
                 ),
                 job_collection_attempt_at,
@@ -464,31 +508,44 @@ def main() -> None:
                 run_state_table,
                 workspace_id,
                 job_id,
-                jobs_api_client.jobs.list_runs(
+                workspace_client.jobs.list_runs(
                     job_id=job_id,
                     active_only=True,
                     expand_tasks=False,
                 ),
                 job_collection_attempt_at,
             )
-            _merge_job_runs_in_batches(
-                spark_session,
-                run_state_table,
-                workspace_id,
-                job_id,
-                (
-                    jobs_api_client.jobs.get_run(run_id=stored_run_id)
-                    for stored_run_id in _stored_nonterminal_run_ids(
-                        spark_session,
-                        catalog_name,
-                        schema_name,
-                        workspace_id,
-                        job_id,
-                        retention_start_at,
-                    )
-                ),
-                job_collection_attempt_at,
-            )
+            # Recent completed and all active runs were already listed above. Reconcile only the
+            # older stored gap so ordinary polling does not repeat per-run API calls.
+            try:
+                _merge_job_runs_in_batches(
+                    spark_session,
+                    run_state_table,
+                    workspace_id,
+                    job_id,
+                    _retrievable_stored_job_runs(
+                        workspace_client,
+                        _stored_nonterminal_run_ids_for_reconciliation(
+                            spark_session,
+                            catalog_name,
+                            schema_name,
+                            workspace_id,
+                            job_id,
+                            run_history_start_at,
+                            incremental_start_at,
+                        ),
+                        unretrievable_run_ids,
+                    ),
+                    job_collection_attempt_at,
+                )
+            finally:
+                _delete_unretrievable_run_state(
+                    spark_session,
+                    run_state_table,
+                    workspace_id,
+                    job_id,
+                    unretrievable_run_ids,
+                )
             _merge_job_state_rows(
                 spark_session,
                 job_state_table,

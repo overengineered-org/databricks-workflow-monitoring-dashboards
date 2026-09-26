@@ -2,34 +2,38 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
+from src import collect_workflow_monitoring_jobs_api as collector
 from src.collect_workflow_monitoring_jobs_api import (
-    RUN_STATE_MERGE_BATCH_SIZE,
+    RUN_STATE_WRITE_BATCH_SIZE,
     _delete_expired_run_state,
+    _delete_unretrievable_run_state,
     _job_name_from_job_details,
     _last_successful_collection_by_workspace_and_job,
     _merge_job_runs_in_batches,
     _normalized_run_state,
     _prepare_collector_storage,
     _runtime_workspace_id,
-    _stored_nonterminal_run_ids,
+    _stored_nonterminal_run_ids_for_reconciliation,
     _validated_runtime_workspace_id,
 )
 from workflow_monitoring_dashboard import (
@@ -62,6 +66,41 @@ AUTOMATIC_COLLECTOR_STORAGE = CollectorStorageConfiguration(
     schema="lakeflow_jobs",
     create_catalog_and_schema_if_missing=True,
 )
+
+
+class ExpectedMissingRun(Exception):
+    """Stand in for the Jobs SDK's ResourceDoesNotExist error."""
+
+
+class StoredRunStateDataFrame:
+    """Apply the collector's Spark filters to in-memory run rows."""
+
+    def __init__(self, run_state_rows: list[SimpleNamespace]) -> None:
+        self.rows = run_state_rows
+
+    def where(self, predicate: str) -> StoredRunStateDataFrame:
+        if predicate.startswith("workspace_id ="):
+            workspace_id = predicate.split("'")[1]
+            self.rows = [row for row in self.rows if row.workspace_id == workspace_id]
+        elif predicate.startswith("job_id ="):
+            job_id = predicate.split("'")[1]
+            self.rows = [row for row in self.rows if row.job_id == job_id]
+        elif predicate.startswith("period_start_time >= TIMESTAMP"):
+            run_history_start_at = datetime.fromisoformat(predicate.split("'")[1])
+            self.rows = [row for row in self.rows if row.period_start_time >= run_history_start_at]
+        elif predicate.startswith("period_start_time < TIMESTAMP"):
+            incremental_start_at = datetime.fromisoformat(predicate.split("'")[1])
+            self.rows = [row for row in self.rows if row.period_start_time < incremental_start_at]
+        elif predicate.startswith("result_state NOT IN"):
+            terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
+            self.rows = [row for row in self.rows if row.result_state not in terminal_states]
+        return self
+
+    def select(self, *_column_names: str) -> StoredRunStateDataFrame:
+        return self
+
+    def toLocalIterator(self) -> Iterator[SimpleNamespace]:
+        yield from self.rows
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -1065,6 +1104,32 @@ class JobsApiCollectorTests(unittest.TestCase):
         self.assertIn("workspace_id = '111'", retention_statement)
         self.assertIn("period_start_time < TIMESTAMP '2026-06-26 00:00:00'", retention_statement)
 
+    def test_unretrievable_run_deletion_is_scoped_and_batched(self) -> None:
+        recorded_statements: list[str] = []
+        spark_session = SimpleNamespace(sql=recorded_statements.append)
+        _delete_unretrievable_run_state(
+            spark_session,
+            "`monitoring`.`jobs`.`workflow_run_api_state`",
+            "111",
+            42,
+            [],
+        )
+        self.assertEqual(recorded_statements, [])
+
+        _delete_unretrievable_run_state(
+            spark_session,
+            "`monitoring`.`jobs`.`workflow_run_api_state`",
+            "111",
+            42,
+            list(range(1, RUN_STATE_WRITE_BATCH_SIZE + 2)),
+        )
+        missing_run_statement = recorded_statements[0]
+        self.assertIn("workspace_id = '111'", missing_run_statement)
+        self.assertIn("job_id = '42'", missing_run_statement)
+        self.assertIn("run_id IN (1, 2, 3", missing_run_statement)
+        self.assertTrue(missing_run_statement.endswith("499, 500)"))
+        self.assertTrue(recorded_statements[1].endswith("run_id IN (501)"))
+
     def test_collector_source_is_valid_and_idempotent(self) -> None:
         collector_source = JOBS_API_COLLECTOR_PATH.read_text(encoding="utf-8")
         compile(collector_source, str(JOBS_API_COLLECTOR_PATH), "exec")
@@ -1072,11 +1137,13 @@ class JobsApiCollectorTests(unittest.TestCase):
         required_collector_fragments = (
             'RUN_STATE_TABLE_NAME = "workflow_run_api_state"',
             'JOB_STATE_TABLE_NAME = "workflow_job_api_state"',
+            "RUN_HISTORY_RETENTION_DAYS = 60",
             "active_only=True",
+            "completed_only=True",
             "jobs.get(job_id=job_id)",
             "jobs.get_run(run_id=stored_run_id)",
             "INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15",
-            "RUN_STATE_MERGE_BATCH_SIZE = 500",
+            "RUN_STATE_WRITE_BATCH_SIZE = 500",
             "CREATE CATALOG IF NOT EXISTS",
             "CREATE SCHEMA IF NOT EXISTS",
             ".where(f\"workspace_id = '{workspace_id}'\")",
@@ -1099,6 +1166,9 @@ class JobsApiCollectorTests(unittest.TestCase):
             "run_page_url",
             "collected_at",
             'getattr(job_run, "state"',
+            "RUN_STATE_RETENTION_DAYS",
+            "JOBS_API_HISTORY_DAYS",
+            '"STALE"',
         )
         for removed_fragment in removed_complexity:
             self.assertNotIn(removed_fragment, collector_source)
@@ -1114,7 +1184,7 @@ class JobsApiCollectorTests(unittest.TestCase):
                     termination_details=SimpleNamespace(code="SUCCESS"),
                 ),
             )
-            for run_id in range(1, RUN_STATE_MERGE_BATCH_SIZE + 2)
+            for run_id in range(1, RUN_STATE_WRITE_BATCH_SIZE + 2)
         )
         with patch(
             "src.collect_workflow_monitoring_jobs_api._merge_run_state_rows"
@@ -1131,7 +1201,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         merged_batch_sizes = [
             len(merge_call.args[2]) for merge_call in merge_run_state_rows.call_args_list
         ]
-        self.assertEqual(merged_batch_sizes, [RUN_STATE_MERGE_BATCH_SIZE, 1])
+        self.assertEqual(merged_batch_sizes, [RUN_STATE_WRITE_BATCH_SIZE, 1])
 
     def test_current_jobs_api_status_maps_terminal_outcomes(self) -> None:
         mapping_cases = (
@@ -1223,15 +1293,16 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
         self.assertEqual(checkpoints, {("111", "42"): checkpoint_time})
 
-    def test_nonterminal_run_reconciliation_is_scoped_and_streamed(self) -> None:
-        api_retention_start_at = datetime(2026, 6, 26)
+    def test_nonterminal_reconciliation_uses_only_unlisted_history_gap(self) -> None:
+        run_history_start_at = datetime(2026, 6, 26)
+        incremental_start_at = datetime(2026, 8, 24)
 
         def run_state_row(
             workspace_id: str,
             job_id: str,
             run_id: int,
             result_state: str,
-            period_start_time: datetime = datetime(2026, 8, 24),
+            period_start_time: datetime = datetime(2026, 8, 23),
         ) -> SimpleNamespace:
             return SimpleNamespace(
                 workspace_id=workspace_id,
@@ -1247,55 +1318,290 @@ class JobsApiCollectorTests(unittest.TestCase):
             run_state_row("222", "42", 902, "RUNNING"),
             run_state_row("111", "99", 903, "RUNNING"),
             run_state_row("111", "42", 904, "RUNNING", datetime(2026, 6, 25)),
+            run_state_row("111", "42", 905, "RUNNING", run_history_start_at),
+            run_state_row("111", "42", 906, "RUNNING", incremental_start_at),
         ]
 
-        class RunStateDataFrame:
-            def __init__(self, rows: list[SimpleNamespace]) -> None:
-                self.rows = rows
-
-            def select(self, *_column_names: str) -> RunStateDataFrame:
-                return self
-
-            def where(self, predicate: str) -> RunStateDataFrame:
-                if predicate.startswith("workspace_id ="):
-                    selected_workspace_id = predicate.split("'")[1]
-                    self.rows = [
-                        row for row in self.rows if row.workspace_id == selected_workspace_id
-                    ]
-                elif predicate.startswith("job_id ="):
-                    selected_job_id = predicate.split("'")[1]
-                    self.rows = [row for row in self.rows if row.job_id == selected_job_id]
-                elif predicate.startswith("result_state NOT IN"):
-                    terminal_states = set(re.findall(r"'([A-Z_]+)'", predicate))
-                    self.rows = [
-                        row for row in self.rows if row.result_state not in terminal_states
-                    ]
-                elif predicate.startswith("period_start_time >= TIMESTAMP"):
-                    selected_retention_start_at = datetime.fromisoformat(predicate.split("'")[1])
-                    self.rows = [
-                        row
-                        for row in self.rows
-                        if row.period_start_time >= selected_retention_start_at
-                    ]
-                return self
-
-            def toLocalIterator(self) -> Iterator[SimpleNamespace]:
-                yield from self.rows
-
         spark_session = SimpleNamespace(
-            table=lambda _table_name: RunStateDataFrame(run_state_rows.copy())
+            table=lambda _table_name: StoredRunStateDataFrame(run_state_rows.copy())
         )
         nonterminal_run_ids = list(
-            _stored_nonterminal_run_ids(
+            _stored_nonterminal_run_ids_for_reconciliation(
                 spark_session,
                 "monitoring",
                 "jobs",
                 "111",
                 42,
-                api_retention_start_at,
+                run_history_start_at,
+                incremental_start_at,
             )
         )
-        self.assertEqual(nonterminal_run_ids, [900])
+        self.assertEqual(nonterminal_run_ids, [900, 905])
+
+    def _collect_with_stored_run_scenario(
+        self,
+        first_stored_run_error: Exception,
+        run_merge_error: Exception | None = None,
+        run_delete_error: Exception | None = None,
+        later_run_error: Exception | None = None,
+    ) -> SimpleNamespace:
+        collection_time = datetime.now(UTC).replace(tzinfo=None)
+        stored_run_rows = {
+            run_id: SimpleNamespace(
+                workspace_id="111",
+                job_id="42",
+                run_id=run_id,
+                period_start_time=collection_time - timedelta(days=age_days),
+                result_state="RUNNING",
+            )
+            for run_id, age_days in ((700, 75), (800, 10), (900, 2))
+        }
+        stored_run_rows[950] = SimpleNamespace(
+            workspace_id="111",
+            job_id="42",
+            run_id=950,
+            period_start_time=collection_time - timedelta(minutes=10),
+            result_state="RUNNING",
+        )
+
+        def job_run(
+            run_id: int,
+            age_days: int,
+            lifecycle_state: str = "TERMINATED",
+        ) -> SimpleNamespace:
+            run_start_at = (collection_time - timedelta(days=age_days)).replace(tzinfo=UTC)
+            return SimpleNamespace(
+                run_id=run_id,
+                start_time=int(run_start_at.timestamp() * 1000),
+                end_time=(
+                    int((run_start_at + timedelta(minutes=1)).timestamp() * 1000)
+                    if lifecycle_state == "TERMINATED"
+                    else None
+                ),
+                status=SimpleNamespace(
+                    state=lifecycle_state,
+                    termination_details=(
+                        SimpleNamespace(code="SUCCESS") if lifecycle_state == "TERMINATED" else None
+                    ),
+                ),
+            )
+
+        retrieved_run_ids: list[int] = []
+
+        def retrieve_stored_run(*, run_id: int) -> SimpleNamespace:
+            retrieved_run_ids.append(run_id)
+            if run_id == 800:
+                raise first_stored_run_error
+            if run_id == 900 and later_run_error is not None:
+                raise later_run_error
+            return job_run(run_id, 2)
+
+        jobs_api = SimpleNamespace(
+            get=Mock(return_value=SimpleNamespace(settings=SimpleNamespace(name="Daily Orders"))),
+            list_runs=Mock(
+                side_effect=lambda **options: (
+                    [job_run(950, 0, "RUNNING")]
+                    if options.get("active_only")
+                    else [job_run(1000, 0)]
+                )
+            ),
+            get_run=Mock(side_effect=retrieve_stored_run),
+        )
+        workspace_client = SimpleNamespace(jobs=jobs_api)
+        sdk_module = ModuleType("databricks.sdk")
+        sdk_module.__path__ = []
+        sdk_module.WorkspaceClient = lambda: workspace_client
+        sdk_errors_module = ModuleType("databricks.sdk.errors")
+        sdk_errors_module.ResourceDoesNotExist = ExpectedMissingRun
+        databricks_module = ModuleType("databricks")
+        databricks_module.__path__ = []
+
+        notebook_context = SimpleNamespace(workspaceId=lambda: SimpleNamespace(get=lambda: "111"))
+        notebook_handle = SimpleNamespace(getContext=lambda: notebook_context)
+        runtime_utilities = SimpleNamespace(notebook=lambda: notebook_handle)
+        widget_values = {
+            "catalog_name": "monitoring",
+            "schema_name": "jobs",
+            "create_catalog_and_schema_if_missing": "false",
+            "workspace_id": "111",
+            "monitored_job_ids_json": "[42]",
+        }
+        notebook_utilities = SimpleNamespace(
+            widgets=SimpleNamespace(get=widget_values.__getitem__),
+            notebook=SimpleNamespace(
+                entry_point=SimpleNamespace(getDbutils=lambda: runtime_utilities)
+            ),
+        )
+        spark_session = SimpleNamespace(
+            table=lambda _table_name: StoredRunStateDataFrame(list(stored_run_rows.values()))
+        )
+        deleted_run_state_cutoffs: list[datetime] = []
+        deleted_unretrievable_run_ids: list[int] = []
+        job_state_updates: list[dict[str, Any]] = []
+
+        def delete_expired_run_state(*args: Any) -> None:
+            retention_start_at = args[-1]
+            deleted_run_state_cutoffs.append(retention_start_at)
+            for stored_run_id, stored_run_row in list(stored_run_rows.items()):
+                if stored_run_row.period_start_time < retention_start_at:
+                    stored_run_rows.pop(stored_run_id)
+
+        def delete_unretrievable_run_state(
+            _spark_session: Any,
+            _qualified_table_name: str,
+            _workspace_id: str,
+            _job_id: int,
+            unretrievable_run_ids: list[int],
+        ) -> None:
+            if run_delete_error is not None:
+                raise run_delete_error
+            deleted_unretrievable_run_ids.extend(unretrievable_run_ids)
+            for unretrievable_run_id in unretrievable_run_ids:
+                stored_run_rows.pop(unretrievable_run_id)
+
+        def merge_run_rows(
+            _spark_session: Any, _qualified_table_name: str, incoming_rows: list[dict[str, Any]]
+        ) -> None:
+            if run_merge_error is not None:
+                raise run_merge_error
+            for incoming_row in incoming_rows:
+                stored_run_rows[incoming_row["run_id"]] = SimpleNamespace(**incoming_row)
+
+        def merge_job_rows(
+            _spark_session: Any, _qualified_table_name: str, incoming_rows: list[dict[str, Any]]
+        ) -> None:
+            job_state_updates.extend(incoming_rows)
+
+        collector_output = io.StringIO()
+        collection_error: RuntimeError | None = None
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "databricks": databricks_module,
+                    "databricks.sdk": sdk_module,
+                    "databricks.sdk.errors": sdk_errors_module,
+                },
+            ),
+            patch.object(collector, "spark", spark_session, create=True),
+            patch.object(collector, "dbutils", notebook_utilities, create=True),
+            patch.object(collector, "_prepare_collector_storage"),
+            patch.object(
+                collector,
+                "_delete_expired_run_state",
+                side_effect=delete_expired_run_state,
+            ),
+            patch.object(
+                collector,
+                "_delete_unretrievable_run_state",
+                side_effect=delete_unretrievable_run_state,
+            ),
+            patch.object(
+                collector,
+                "_last_successful_collection_by_workspace_and_job",
+                return_value={("111", "42"): collection_time - timedelta(minutes=5)},
+            ),
+            patch.object(collector, "_merge_run_state_rows", side_effect=merge_run_rows),
+            patch.object(collector, "_merge_job_state_rows", side_effect=merge_job_rows),
+            redirect_stdout(collector_output),
+        ):
+            try:
+                collector.main()
+            except RuntimeError as error:
+                collection_error = error
+
+        return SimpleNamespace(
+            collection_time=collection_time,
+            collection_error=collection_error,
+            stored_run_rows=stored_run_rows,
+            retrieved_run_ids=retrieved_run_ids,
+            list_runs_requests=jobs_api.list_runs.call_args_list,
+            deleted_run_state_cutoffs=deleted_run_state_cutoffs,
+            deleted_unretrievable_run_ids=deleted_unretrievable_run_ids,
+            job_state_updates=job_state_updates,
+            collector_output=collector_output.getvalue(),
+        )
+
+    def test_expired_and_missing_runs_are_removed_without_blocking_collection(self) -> None:
+        collection = self._collect_with_stored_run_scenario(
+            ExpectedMissingRun("run expired or deleted")
+        )
+        self.assertIsNone(collection.collection_error)
+        self.assertEqual(collection.retrieved_run_ids, [800, 900])
+        self.assertNotIn(950, collection.retrieved_run_ids)
+        self.assertNotIn(700, collection.stored_run_rows)
+        self.assertNotIn(800, collection.stored_run_rows)
+        self.assertEqual(collection.deleted_unretrievable_run_ids, [800])
+        self.assertEqual(collection.stored_run_rows[900].result_state, "SUCCEEDED")
+        self.assertEqual(collection.stored_run_rows[950].result_state, "RUNNING")
+        self.assertEqual(collection.stored_run_rows[1000].result_state, "SUCCEEDED")
+        self.assertIn("Removing unavailable stored run ID 800", collection.collector_output)
+        self.assertIn("RESOURCE_DOES_NOT_EXIST", collection.collector_output)
+        self.assertIn("run expired or deleted", collection.collector_output)
+        self.assertGreater(
+            collection.job_state_updates[-1]["last_successful_collection_at"],
+            collection.collection_time - timedelta(minutes=1),
+        )
+        self.assertIsNone(collection.job_state_updates[-1]["last_error_message"])
+        self.assertEqual(len(collection.deleted_run_state_cutoffs), 1)
+        self.assertLess(
+            abs(
+                collection.collection_time
+                - collection.deleted_run_state_cutoffs[0]
+                - timedelta(days=60)
+            ),
+            timedelta(minutes=1),
+        )
+        requested_start_at = datetime.fromtimestamp(
+            collection.list_runs_requests[0].kwargs["start_time_from"] / 1000, tz=UTC
+        ).replace(tzinfo=None)
+        self.assertEqual(len(collection.list_runs_requests), 2)
+        self.assertTrue(collection.list_runs_requests[0].kwargs["completed_only"])
+        self.assertNotIn("active_only", collection.list_runs_requests[0].kwargs)
+        self.assertTrue(collection.list_runs_requests[1].kwargs["active_only"])
+        self.assertNotIn("completed_only", collection.list_runs_requests[1].kwargs)
+        self.assertLess(
+            abs(collection.collection_time - requested_start_at - timedelta(minutes=20)),
+            timedelta(minutes=1),
+        )
+
+    def test_unexpected_api_and_storage_errors_fail_collection(self) -> None:
+        for unexpected_error, run_merge_error, run_delete_error in (
+            (RuntimeError("Jobs API unavailable"), None, None),
+            (ExpectedMissingRun("run expired or deleted"), OSError("Delta merge failed"), None),
+            (ExpectedMissingRun("run expired or deleted"), None, OSError("Delta delete failed")),
+        ):
+            with self.subTest(
+                error=str(unexpected_error),
+                merge_error=str(run_merge_error),
+                delete_error=str(run_delete_error),
+            ):
+                collection = self._collect_with_stored_run_scenario(
+                    unexpected_error,
+                    run_merge_error,
+                    run_delete_error,
+                )
+                self.assertRegex(str(collection.collection_error), "failed for job IDs: 42")
+                self.assertIsNone(collection.job_state_updates[-1]["last_successful_collection_at"])
+                expected_error = run_merge_error or run_delete_error or unexpected_error
+                self.assertIn(
+                    str(expected_error), collection.job_state_updates[-1]["last_error_message"]
+                )
+
+    def test_confirmed_missing_run_is_removed_before_later_api_failure(self) -> None:
+        collection = self._collect_with_stored_run_scenario(
+            ExpectedMissingRun("run expired or deleted"),
+            later_run_error=RuntimeError("later Jobs API failure"),
+        )
+
+        self.assertRegex(str(collection.collection_error), "failed for job IDs: 42")
+        self.assertEqual(collection.retrieved_run_ids, [800, 900])
+        self.assertNotIn(800, collection.stored_run_rows)
+        self.assertEqual(collection.deleted_unretrievable_run_ids, [800])
+        self.assertIn(
+            "later Jobs API failure",
+            collection.job_state_updates[-1]["last_error_message"],
+        )
 
 
 class SqlValidationScriptTests(unittest.TestCase):
