@@ -145,11 +145,6 @@ def _validate_configuration_schema(configuration_document: Any, schema_path: Pat
         return
 
     first_error = validation_errors[0]
-    required_field_errors = [
-        nested_error for nested_error in first_error.context if nested_error.validator == "required"
-    ]
-    if required_field_errors:
-        first_error = required_field_errors[0]
     error_path = ".".join(str(path_part) for path_part in first_error.absolute_path) or "root"
     raise ValueError(
         f"workflow monitoring configuration does not match schema at {error_path}: {first_error.message}"

@@ -60,14 +60,104 @@ for ((dataset_index = 0; dataset_index < dataset_count; dataset_index++)); do
   fi
 done
 
-# These fixed dates test schedule math only. They do not create tables or rows.
-sla_calculation_statement="
+# Inline rows evaluate fixed-date statuses without creating tables or other workspace objects.
+sla_regression_statement="
+WITH inline_workflows (
+  workflow_name, frequency, completion_time, day_of_week, first_deadline_date,
+  day_of_month, current_instant_utc
+) AS (
+  VALUES
+    ('daily_miss', 'daily', '06:00', CAST(NULL AS STRING), CAST(NULL AS DATE), CAST(NULL AS INT), TIMESTAMP '2026-09-25 05:00:00'),
+    ('daily_success', 'daily', '06:00', CAST(NULL AS STRING), CAST(NULL AS DATE), CAST(NULL AS INT), TIMESTAMP '2026-09-25 05:00:00'),
+    ('monthly_miss', 'monthly', '06:00', CAST(NULL AS STRING), CAST(NULL AS DATE), 26, TIMESTAMP '2026-09-25 05:00:00'),
+    ('weekly_miss', 'weekly', '06:00', 'monday', CAST(NULL AS DATE), CAST(NULL AS INT), TIMESTAMP '2026-09-28 05:00:00'),
+    ('fortnightly_miss', 'fortnightly', '06:00', CAST(NULL AS STRING), DATE '2026-09-14', CAST(NULL AS INT), TIMESTAMP '2026-09-28 05:00:00')
+),
+inline_runs (workflow_name, run_end_time, result_state) AS (
+  VALUES ('daily_success', TIMESTAMP '2026-09-24 05:30:00', 'SUCCEEDED')
+),
+workflow_local_dates AS (
+  SELECT *, to_date(current_instant_utc) AS local_today,
+    CASE day_of_week WHEN 'sunday' THEN 1 WHEN 'monday' THEN 2 WHEN 'tuesday' THEN 3 WHEN 'wednesday' THEN 4 WHEN 'thursday' THEN 5 WHEN 'friday' THEN 6 WHEN 'saturday' THEN 7 END AS target_day
+  FROM inline_workflows
+),
+current_deadline_dates AS (
+  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 2), date_add(local_today, 1))) d AS deadline_date WHERE frequency = 'daily'
+  UNION ALL
+  SELECT w.*, date_add(date_add(local_today, -pmod(dayofweek(local_today) - target_day, 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'weekly'
+  UNION ALL
+  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'fortnightly'
+  UNION ALL
+  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'monthly'
+),
+history_deadline_dates AS (
+  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 61), date_add(local_today, 2))) d AS deadline_date WHERE frequency = 'daily'
+  UNION ALL
+  SELECT w.*, date_add(date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-1, 14)) o AS offset WHERE frequency = 'weekly'
+  UNION ALL
+  SELECT w.*, date_add(first_deadline_date, (CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-5, 3)) o AS offset WHERE frequency = 'fortnightly'
+  UNION ALL
+  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-3, 2)) o AS offset WHERE frequency = 'monthly'
+),
+current_deadline_periods AS (
+  SELECT *,
+    to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), 'UTC') AS deadline_utc,
+    LAG(to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), 'UTC')) OVER (PARTITION BY workflow_name ORDER BY deadline_date) AS previous_deadline_utc
+  FROM current_deadline_dates
+),
+history_deadline_periods AS (
+  SELECT *,
+    to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), 'UTC') AS deadline_utc,
+    LAG(to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), 'UTC')) OVER (PARTITION BY workflow_name ORDER BY deadline_date) AS previous_deadline_utc
+  FROM history_deadline_dates
+),
+current_deadline_results AS (
+  SELECT d.workflow_name, d.deadline_utc, d.current_instant_utc,
+    CASE WHEN COUNT(DISTINCT CASE WHEN r.result_state = 'SUCCEEDED' THEN r.run_end_time END) > 0 THEN 'Met' WHEN d.deadline_utc <= d.current_instant_utc THEN 'Missed' ELSE 'Pending' END AS deadline_status
+  FROM current_deadline_periods d
+  LEFT JOIN inline_runs r ON d.workflow_name = r.workflow_name AND r.run_end_time > d.previous_deadline_utc AND r.run_end_time <= d.deadline_utc
+  WHERE d.previous_deadline_utc IS NOT NULL
+  GROUP BY d.workflow_name, d.deadline_utc, d.current_instant_utc
+),
+history_deadline_results AS (
+  SELECT d.workflow_name, d.deadline_utc, d.current_instant_utc,
+    CASE WHEN COUNT(DISTINCT CASE WHEN r.result_state = 'SUCCEEDED' THEN r.run_end_time END) > 0 THEN 'Met' WHEN d.deadline_utc <= d.current_instant_utc THEN 'Missed' ELSE 'Pending' END AS deadline_status
+  FROM history_deadline_periods d
+  LEFT JOIN inline_runs r ON d.workflow_name = r.workflow_name AND r.run_end_time > d.previous_deadline_utc AND r.run_end_time <= d.deadline_utc
+  WHERE d.previous_deadline_utc IS NOT NULL
+  GROUP BY d.workflow_name, d.deadline_utc, d.current_instant_utc
+),
+current_last_due AS (
+  SELECT * FROM current_deadline_results WHERE deadline_utc <= current_instant_utc
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY workflow_name ORDER BY deadline_utc DESC) = 1
+),
+current_next_due AS (
+  SELECT * FROM current_deadline_results WHERE deadline_utc > current_instant_utc
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY workflow_name ORDER BY deadline_utc) = 1
+),
+history_last_due AS (
+  SELECT * FROM history_deadline_results WHERE deadline_utc <= current_instant_utc
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY workflow_name ORDER BY deadline_utc DESC) = 1
+),
+regression_results AS (
+  SELECT l.workflow_name, l.deadline_utc AS latest_due_at,
+    l.deadline_status AS current_latest_due_status,
+    h.deadline_status AS history_latest_due_status,
+    CASE WHEN l.deadline_status = 'Missed' THEN 'Missed' ELSE COALESCE(n.deadline_status, l.deadline_status, 'Pending') END AS current_sla_status,
+    CASE WHEN l.deadline_status <> 'Missed' AND COALESCE(n.deadline_status, 'Pending') = 'Pending' THEN 1 ELSE 0 END AS sla_pending_flag,
+    CASE WHEN l.deadline_status = 'Missed' THEN 1 ELSE 0 END AS sla_missed_flag,
+    CASE WHEN l.deadline_status = 'Missed' THEN 1 ELSE 0 END AS needs_attention_flag
+  FROM current_last_due l
+  LEFT JOIN current_next_due n ON l.workflow_name = n.workflow_name
+  INNER JOIN history_last_due h ON l.workflow_name = h.workflow_name AND l.deadline_utc = h.deadline_utc
+)
 SELECT
-  assert_true(array_contains(sequence(DATE '2026-02-10', DATE '2026-02-12'), DATE '2026-02-11'), 'daily schedule failed'),
-  assert_true(date_add(DATE '2026-02-11', -pmod(dayofweek(DATE '2026-02-11') - 2, 7)) = DATE '2026-02-09', 'weekly schedule failed'),
-  assert_true(date_add(date_add(DATE '2026-02-11', -pmod(dayofweek(DATE '2026-02-11') - 2, 7)), -7) = DATE '2026-02-02', 'weekly predecessor failed'),
-  assert_true(date_add(DATE '2026-01-12', CAST(FLOOR(datediff(DATE '2026-02-11', DATE '2026-01-12') / 14.0) AS INT) * 14) = DATE '2026-02-09', 'fortnightly schedule failed'),
-  assert_true(date_add(to_date(date_trunc('MONTH', DATE '2026-02-11')), LEAST(31, day(last_day(DATE '2026-02-11'))) - 1) = DATE '2026-02-28', 'monthly cap failed'),
+  assert_true(count_if(workflow_name = 'daily_miss' AND latest_due_at = TIMESTAMP '2026-09-24 06:00:00' AND current_sla_status = 'Missed' AND sla_pending_flag = 0 AND sla_missed_flag = 1 AND needs_attention_flag = 1 AND current_latest_due_status = history_latest_due_status) = 1, 'daily missed deadline regression failed'),
+  assert_true(count_if(workflow_name = 'monthly_miss' AND latest_due_at = TIMESTAMP '2026-08-26 06:00:00' AND current_sla_status = 'Missed' AND sla_pending_flag = 0 AND sla_missed_flag = 1 AND needs_attention_flag = 1 AND current_latest_due_status = history_latest_due_status) = 1, 'monthly missed deadline regression failed'),
+  assert_true(count_if(workflow_name = 'weekly_miss' AND latest_due_at = TIMESTAMP '2026-09-21 06:00:00' AND current_sla_status = 'Missed' AND current_latest_due_status = history_latest_due_status) = 1, 'weekly boundary regression failed'),
+  assert_true(count_if(workflow_name = 'fortnightly_miss' AND latest_due_at = TIMESTAMP '2026-09-14 06:00:00' AND current_sla_status = 'Missed' AND current_latest_due_status = history_latest_due_status) = 1, 'fortnightly boundary regression failed'),
+  assert_true(count_if(workflow_name = 'daily_success' AND latest_due_at = TIMESTAMP '2026-09-24 06:00:00' AND current_latest_due_status = 'Met' AND history_latest_due_status = 'Met' AND current_sla_status = 'Pending' AND sla_pending_flag = 1 AND sla_missed_flag = 0 AND needs_attention_flag = 0) = 1, 'successful run control failed'),
   assert_true(to_utc_timestamp(to_timestamp('2026-01-15 06:00', 'yyyy-MM-dd HH:mm'), 'Australia/Melbourne') = TIMESTAMP '2026-01-14 19:00:00', 'timezone conversion failed')
+FROM regression_results
 "
-validate_statement "sla_calculations" "$sla_calculation_statement"
+validate_statement "sla_regressions" "$sla_regression_statement"

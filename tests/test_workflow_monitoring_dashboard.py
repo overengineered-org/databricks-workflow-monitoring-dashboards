@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
 import textwrap
 import unittest
 from collections.abc import Iterator
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -35,18 +38,25 @@ from workflow_monitoring_dashboard import (
     CollectorStorageConfiguration,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
+    _load_custom_visualization,
+    _validate_schedule_fields,
     generate_collector_job_resource,
     generate_dashboard,
     load_workflow_monitoring_configuration,
+)
+from workflow_monitoring_dashboard import (
+    main as dashboard_main,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPOSITORY_ROOT / "schema/workflow-monitoring.schema.json"
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
+GENERATED_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
 LOCAL_VALIDATION_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/run-local-validation.sh"
+SQL_VALIDATION_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/validate-sql-datasets.sh"
 AUTOMATIC_COLLECTOR_STORAGE = CollectorStorageConfiguration(
     catalog="workflow_monitoring",
     schema="lakeflow_jobs",
@@ -183,6 +193,69 @@ class ConfigurationTests(unittest.TestCase):
                         expected_workflow_count,
                     )
 
+    def test_schedule_specific_fields_are_required_and_exclusive(self) -> None:
+        invalid_schedule_cases = (
+            (
+                {"frequency": "weekly", "completion_time": "06:00"},
+                "weekly SLA requires a lowercase day_of_week",
+            ),
+            (
+                {
+                    "frequency": "weekly",
+                    "completion_time": "06:00",
+                    "day_of_week": "monday",
+                    "day_of_month": 1,
+                },
+                "weekly SLA does not accept first_deadline_date or day_of_month",
+            ),
+            (
+                {"frequency": "fortnightly", "completion_time": "06:00"},
+                "fortnightly SLA requires first_deadline_date",
+            ),
+            (
+                {
+                    "frequency": "fortnightly",
+                    "completion_time": "06:00",
+                    "first_deadline_date": "2026-01-12",
+                    "day_of_week": "monday",
+                },
+                "fortnightly SLA does not accept day_of_week or day_of_month",
+            ),
+            (
+                {"frequency": "monthly", "completion_time": "06:00"},
+                "monthly SLA requires day_of_month from 1 to 31",
+            ),
+            (
+                {
+                    "frequency": "monthly",
+                    "completion_time": "06:00",
+                    "day_of_month": 1,
+                    "first_deadline_date": "2026-01-12",
+                },
+                "monthly SLA does not accept day_of_week or first_deadline_date",
+            ),
+            (
+                {"frequency": "hourly", "completion_time": "06:00"},
+                "sla.frequency must be daily, weekly, fortnightly, or monthly",
+            ),
+        )
+
+        for schedule_document, expected_error in invalid_schedule_cases:
+            with self.subTest(schedule_document=schedule_document):
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    _validate_schedule_fields(schedule_document)
+
+    def test_invalid_schema_document_reports_the_schema_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            configuration_path = temporary_root / "workflow-monitoring.yml"
+            configuration_path.write_text("version: 2\n", encoding="utf-8")
+            invalid_schema_path = temporary_root / "workflow-monitoring.schema.json"
+            invalid_schema_path.write_text("{", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "load workflow monitoring schema"):
+                load_workflow_monitoring_configuration(configuration_path, invalid_schema_path)
+
     def test_jobs_api_storage_modes_and_job_id_are_explicit(self) -> None:
         configuration_cases = (
             (
@@ -308,6 +381,44 @@ class DashboardGenerationTests(unittest.TestCase):
                 ("CAST('42' AS STRING)", "CAST(31 AS INT)"),
             ),
             (
+                "fortnightly workflow",
+                WorkflowMonitoringConfiguration(
+                    workspace_id="123456789",
+                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
+                    active_workflows=(
+                        ActiveWorkflow(
+                            job_id=43,
+                            sla=ServiceLevelAgreement(
+                                frequency="fortnightly",
+                                completion_time="06:00",
+                                timezone="UTC",
+                                first_deadline_date="2026-01-12",
+                            ),
+                        ),
+                    ),
+                ),
+                ("CAST('43' AS STRING)", "CAST('2026-01-12' AS DATE)"),
+            ),
+            (
+                "weekly workflow",
+                WorkflowMonitoringConfiguration(
+                    workspace_id="123456789",
+                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
+                    active_workflows=(
+                        ActiveWorkflow(
+                            job_id=44,
+                            sla=ServiceLevelAgreement(
+                                frequency="weekly",
+                                completion_time="06:00",
+                                timezone="UTC",
+                                day_of_week="monday",
+                            ),
+                        ),
+                    ),
+                ),
+                ("CAST('44' AS STRING)", "'monday' AS day_of_week"),
+            ),
+            (
                 "zero active workflows",
                 WorkflowMonitoringConfiguration(
                     workspace_id="123456789",
@@ -372,6 +483,109 @@ class DashboardGenerationTests(unittest.TestCase):
                     scaffold_path,
                     temporary_path / "dashboard.json",
                 )
+
+    def test_generation_rejects_invalid_scaffolds_and_duplicate_markers(self) -> None:
+        configuration = WorkflowMonitoringConfiguration(
+            workspace_id="123456789",
+            active_workflows=(),
+            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            output_path = temporary_root / "dashboard.json"
+
+            invalid_json_path = temporary_root / "invalid-json.json"
+            invalid_json_path.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "parse dashboard scaffold"):
+                generate_dashboard(configuration, invalid_json_path, output_path)
+
+            missing_source_marker_path = temporary_root / "missing-source-marker.json"
+            missing_source_marker_path.write_text(
+                json.dumps({"query": "{{CONFIGURED_WORKFLOWS}}"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "no source marker.*WORKFLOW_METADATA"):
+                generate_dashboard(configuration, missing_source_marker_path, output_path)
+
+            visualization_path = temporary_root / "visualization.json"
+            visualization_path.write_text(
+                json.dumps(
+                    {
+                        "data": {"name": "databricks_query"},
+                        "width": "container",
+                        "height": "container",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            duplicate_visualization_marker_path = temporary_root / "duplicate-marker.json"
+            duplicate_visualization_marker_path.write_text(
+                json.dumps(
+                    {
+                        "query": "{{CONFIGURED_WORKFLOWS}} {{WORKFLOW_METADATA}} "
+                        "{{COLLECTED_RUNS_TABLE}}",
+                        "first_visualization": "{{TEST_VISUALIZATION}}",
+                        "second_visualization": "{{TEST_VISUALIZATION}}",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(
+                    CUSTOM_VISUALIZATION_FILES,
+                    {"{{TEST_VISUALIZATION}}": visualization_path},
+                    clear=True,
+                ),
+                self.assertRaisesRegex(ValueError, "duplicate custom visualization marker"),
+            ):
+                generate_dashboard(
+                    configuration,
+                    duplicate_visualization_marker_path,
+                    output_path,
+                )
+
+    def test_custom_visualizations_reject_invalid_contracts(self) -> None:
+        invalid_visualization_cases = (
+            ("{", "parse custom visualization"),
+            (
+                json.dumps(
+                    {
+                        "data": {"name": "other_query"},
+                        "width": "container",
+                        "height": "container",
+                    }
+                ),
+                "must read from databricks_query",
+            ),
+            (
+                json.dumps(
+                    {
+                        "data": {"name": "databricks_query"},
+                        "width": 400,
+                        "height": "container",
+                    }
+                ),
+                "must use container width",
+            ),
+            (
+                json.dumps(
+                    {
+                        "data": {"name": "databricks_query"},
+                        "width": "container",
+                        "height": 300,
+                    }
+                ),
+                "must use container height",
+            ),
+        )
+
+        for visualization_text, expected_error in invalid_visualization_cases:
+            with self.subTest(expected_error=expected_error):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    visualization_path = Path(temporary_directory) / "visualization.json"
+                    visualization_path.write_text(visualization_text, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, expected_error):
+                        _load_custom_visualization(visualization_path)
 
     def test_generation_injects_valid_custom_visualizations(self) -> None:
         configuration = WorkflowMonitoringConfiguration(
@@ -524,8 +738,115 @@ class DashboardGenerationTests(unittest.TestCase):
             )
 
 
+class DashboardCommandTests(unittest.TestCase):
+    """Exercise successful and failed CLI command paths."""
+
+    def test_validate_and_generate_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            configuration_path = temporary_root / "workflow-monitoring.yml"
+            configuration_path.write_text(
+                textwrap.dedent(
+                    """\
+                    version: 2
+                    workspace_id: "123456789"
+                    default_timezone: UTC
+                    workflows: []
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            validation_stdout = StringIO()
+            with redirect_stdout(validation_stdout):
+                validation_exit_code = dashboard_main(
+                    [
+                        "validate",
+                        "--config",
+                        str(configuration_path),
+                        "--schema",
+                        str(SCHEMA_PATH),
+                    ]
+                )
+            self.assertEqual(validation_exit_code, 0)
+            self.assertEqual(
+                validation_stdout.getvalue(), "valid configuration: 0 active workflows\n"
+            )
+
+            dashboard_output_path = temporary_root / "dashboard.json"
+            collector_resource_output_path = temporary_root / "collector.yml"
+            generation_stdout = StringIO()
+            with redirect_stdout(generation_stdout):
+                generation_exit_code = dashboard_main(
+                    [
+                        "generate",
+                        "--config",
+                        str(configuration_path),
+                        "--schema",
+                        str(SCHEMA_PATH),
+                        "--scaffold",
+                        str(SCAFFOLD_PATH),
+                        "--output",
+                        str(dashboard_output_path),
+                        "--jobs-api-resource-output",
+                        str(collector_resource_output_path),
+                    ]
+                )
+            self.assertEqual(generation_exit_code, 0)
+            self.assertEqual(
+                generation_stdout.getvalue(),
+                f"generated dashboard: {dashboard_output_path} (0 active workflows)\n",
+            )
+            self.assertTrue(dashboard_output_path.is_file())
+            self.assertTrue(collector_resource_output_path.is_file())
+
+    def test_command_reports_configuration_read_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_configuration_path = Path(temporary_directory) / "missing-configuration.yml"
+            command_stderr = StringIO()
+            with redirect_stderr(command_stderr):
+                command_exit_code = dashboard_main(
+                    [
+                        "validate",
+                        "--config",
+                        str(missing_configuration_path),
+                        "--schema",
+                        str(SCHEMA_PATH),
+                    ]
+                )
+
+        self.assertEqual(command_exit_code, 1)
+        self.assertIn(str(missing_configuration_path), command_stderr.getvalue())
+
+
 class DashboardScaffoldTests(unittest.TestCase):
     """Protect names and field bindings used by dashboard widgets and filters."""
+
+    def test_current_status_keeps_a_predecessor_for_every_schedule(self) -> None:
+        expected_deadline_window_fragments = (
+            "sequence(date_sub(local_today, 2), date_add(local_today, 1))",
+            "offset * 7) AS deadline_date FROM workflow_local_dates w "
+            "LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'weekly'",
+            "+ offset) * 14) AS deadline_date FROM workflow_local_dates w "
+            "LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = "
+            "'fortnightly'",
+            "last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM "
+            "workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset "
+            "WHERE frequency = 'monthly'",
+        )
+
+        for dashboard_path in (SCAFFOLD_PATH, GENERATED_DASHBOARD_PATH):
+            with self.subTest(dashboard_path=dashboard_path):
+                dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+                workflow_status_sql = "".join(
+                    next(
+                        dataset["queryLines"]
+                        for dataset in dashboard["datasets"]
+                        if dataset["name"] == "workflow_status"
+                    )
+                )
+                for expected_deadline_window_fragment in expected_deadline_window_fragments:
+                    self.assertIn(expected_deadline_window_fragment, workflow_status_sql)
 
     def test_scaffold_references_are_stable_and_valid(self) -> None:
         scaffold = json.loads(SCAFFOLD_PATH.read_text(encoding="utf-8"))
@@ -975,6 +1296,129 @@ class JobsApiCollectorTests(unittest.TestCase):
             )
         )
         self.assertEqual(nonterminal_run_ids, [900])
+
+
+class SqlValidationScriptTests(unittest.TestCase):
+    """Exercise the read-only fixed-date SQL validation path."""
+
+    def test_submits_fixed_date_regressions_with_the_selected_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            validation_process, submitted_request = self._run_sql_validation(
+                Path(temporary_directory),
+                statement_state="SUCCEEDED",
+            )
+
+        self.assertEqual(validation_process.returncode, 0, validation_process.stderr)
+        self.assertEqual(validation_process.stdout, "sla_regressions: SQL valid\n")
+        self.assertEqual(
+            submitted_request["command_arguments"][:3],
+            ["api", "post", "/api/2.0/sql/statements"],
+        )
+        self.assertEqual(submitted_request["profile"], "selected-profile")
+        self.assertEqual(submitted_request["warehouse_id"], "warehouse-123")
+        self.assertEqual(submitted_request["wait_timeout"], "50s")
+        self.assertEqual(submitted_request["on_wait_timeout"], "CANCEL")
+        self.assertEqual(submitted_request["row_limit"], 1)
+
+        regression_statement = submitted_request["statement"]
+        for fixed_date_case in (
+            "daily_miss",
+            "monthly_miss",
+            "weekly_miss",
+            "fortnightly_miss",
+            "daily_success",
+        ):
+            self.assertIn(fixed_date_case, regression_statement)
+        self.assertIn("current_latest_due_status = history_latest_due_status", regression_statement)
+        self.assertIsNone(
+            re.search(
+                r"\b(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|MERGE|COPY|PUT|REMOVE|GRANT|REVOKE)\b",
+                regression_statement,
+                re.IGNORECASE,
+            )
+        )
+
+    def test_reports_fixed_date_regression_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            validation_process, _ = self._run_sql_validation(
+                Path(temporary_directory),
+                statement_state="FAILED",
+            )
+
+        self.assertEqual(validation_process.returncode, 1)
+        self.assertEqual(
+            validation_process.stderr,
+            "sla_regressions: FAILED: synthetic SQL failure\n",
+        )
+
+    @staticmethod
+    def _run_sql_validation(
+        temporary_root: Path,
+        statement_state: str,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+        dashboard_fixture_path = temporary_root / "dashboard.json"
+        dashboard_fixture_path.write_text('{"datasets": []}\n', encoding="utf-8")
+        submitted_request_log_path = temporary_root / "submitted-request.jsonl"
+
+        fake_binary_directory = temporary_root / "bin"
+        fake_binary_directory.mkdir()
+        fake_databricks_path = fake_binary_directory / "databricks"
+        fake_databricks_path.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import json
+                import os
+                import sys
+
+                command_arguments = sys.argv[1:]
+                request_path = command_arguments[command_arguments.index("--json") + 1][1:]
+                selected_profile = command_arguments[command_arguments.index("--profile") + 1]
+                with open(request_path, encoding="utf-8") as request_file:
+                    request_document = json.load(request_file)
+                request_document["command_arguments"] = command_arguments
+                request_document["profile"] = selected_profile
+                with open(os.environ["SUBMITTED_REQUEST_LOG_PATH"], "w", encoding="utf-8") as log:
+                    json.dump(request_document, log)
+
+                statement_state = os.environ["FAKE_DATABRICKS_STATEMENT_STATE"]
+                response_document = {"status": {"state": statement_state}}
+                if statement_state != "SUCCEEDED":
+                    response_document["status"]["error"] = {"message": "synthetic SQL failure"}
+                print(json.dumps(response_document))
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_databricks_path.chmod(0o755)
+
+        validation_environment = os.environ.copy()
+        validation_environment.update(
+            {
+                "FAKE_DATABRICKS_STATEMENT_STATE": statement_state,
+                "PATH": os.pathsep.join(
+                    (str(fake_binary_directory), validation_environment["PATH"])
+                ),
+                "SUBMITTED_REQUEST_LOG_PATH": str(submitted_request_log_path),
+            }
+        )
+        validation_process = subprocess.run(
+            [
+                "bash",
+                str(SQL_VALIDATION_SCRIPT_PATH),
+                "selected-profile",
+                "warehouse-123",
+                str(dashboard_fixture_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=validation_environment,
+        )
+        submitted_request = json.loads(
+            submitted_request_log_path.read_text(encoding="utf-8").strip()
+        )
+        return validation_process, submitted_request
 
 
 class RepositoryContractTests(unittest.TestCase):
