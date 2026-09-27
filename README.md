@@ -51,7 +51,13 @@ uv sync --locked
 
 The repository-local command downloads the matching prebuilt CLI into the ignored
 `.workflow-monitoring/` directory. It needs no Go installation, administrator rights, `sudo`, or
-global `PATH` change.
+global `PATH` change. Before extraction, the launcher gets the exact asset's SHA-256 digest from
+the GitHub Release API and verifies the downloaded archive. On later runs, it verifies the cached
+archive against GitHub again and checks the cached binary against that archive before execution.
+
+This detects altered or corrupted download, mirror, and cache bytes. It does not protect against a
+compromised release publisher because that publisher controls which asset GitHub accepts and
+digests. If GitHub's digest is unavailable, missing, or malformed, the launcher fails closed.
 
 Windows:
 
@@ -59,8 +65,10 @@ Windows:
 py scripts/run_workflow_monitoring.py --version
 ```
 
-If GitHub downloads are blocked, set `WORKFLOW_MONITORING_RELEASE_DOWNLOAD_ROOT` to an approved
-mirror that uses the same `releases/download` path.
+If GitHub asset downloads are blocked, set `WORKFLOW_MONITORING_RELEASE_DOWNLOAD_ROOT` to an
+approved mirror that uses the same `releases/download` path and copies the release archives
+unchanged. The launcher still gets the trusted digest from the GitHub Release API, so access to
+that API remains required.
 
 ### 2. Get the required IDs
 
@@ -200,7 +208,8 @@ identities, and notebook output are outside this dashboard's scope.
 
 | Problem | Fix |
 | --- | --- |
-| CLI download blocked | Use an approved release mirror, then rerun `./workflow-monitoring`. |
+| CLI asset download blocked | Use an approved byte-for-byte release mirror, then rerun `./workflow-monitoring`. |
+| GitHub release digest blocked | Allow the GitHub Release API; the launcher will not use an unverified CLI. |
 | Configuration invalid | Run `./workflow-monitoring list`, then complete the reported field. |
 | Workspace ID mismatch | Copy the ID from `databricks auth describe --profile <profile>`. |
 | Storage creation denied | Grant namespace rights or use an existing catalog and schema. |

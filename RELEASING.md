@@ -46,7 +46,20 @@ The script creates the tag and immutable GitHub Release, then verifies the publi
 - Local `main` exactly matches `origin/main`.
 - Act, Gitleaks, Go tests, and release builds pass.
 - CLI archives exist for macOS, Linux, and Windows.
+- GitHub publishes a SHA-256 digest for each immutable release asset.
 - The published tag points to the validated commit.
+
+Approved mirrors must copy each archive without modification. Before mirroring, read the trusted
+GitHub digests and verify the copied bytes against the matching asset digest:
+
+```sh
+gh release view v<version> --json assets \
+  --jq '.assets[] | [.name, .digest] | @tsv'
+```
+
+The repository launcher always obtains its expected digest from the GitHub Release API, including
+when archive downloads use a mirror. It fails closed if that digest is unavailable. This detects
+altered download, mirror, and cache bytes, but not a compromised release publisher.
 
 Users run the released CLI through the repository-local command documented in
 [README step 1](README.md#1-clone-and-prepare). This repository does not use semantic-release or
