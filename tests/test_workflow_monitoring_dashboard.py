@@ -866,7 +866,7 @@ class DashboardScaffoldTests(unittest.TestCase):
             "sequence(date_sub(local_today, 2), date_add(local_today, 1))",
             "offset * 7) AS deadline_date FROM workflow_local_dates w "
             "LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'weekly'",
-            "+ offset) * 14) AS deadline_date FROM workflow_local_dates w "
+            ", 0) + offset) * 14) AS deadline_date FROM workflow_local_dates w "
             "LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = "
             "'fortnightly'",
             "last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM "
@@ -886,6 +886,39 @@ class DashboardScaffoldTests(unittest.TestCase):
                 )
                 for expected_deadline_window_fragment in expected_deadline_window_fragments:
                     self.assertIn(expected_deadline_window_fragment, workflow_status_sql)
+
+    def test_fortnightly_deadlines_start_at_first_deadline_date(self) -> None:
+        recurrence_anchor_fragment = (
+            "GREATEST(CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) "
+            "AS INT), 0) + offset"
+        )
+        eligible_deadline_fragment = (
+            "d.frequency <> 'fortnightly' OR d.deadline_date >= d.first_deadline_date"
+        )
+
+        for dashboard_path in (SCAFFOLD_PATH, GENERATED_DASHBOARD_PATH):
+            with self.subTest(dashboard_path=dashboard_path):
+                dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+                dataset_sql_by_name = {
+                    dataset["name"]: "".join(dataset["queryLines"])
+                    for dataset in dashboard["datasets"]
+                }
+                self.assertEqual(
+                    dataset_sql_by_name["workflow_status"].count(recurrence_anchor_fragment),
+                    1,
+                )
+                self.assertEqual(
+                    dataset_sql_by_name["workflow_status"].count(eligible_deadline_fragment),
+                    1,
+                )
+                self.assertEqual(
+                    dataset_sql_by_name["sla_history"].count(recurrence_anchor_fragment),
+                    1,
+                )
+                self.assertEqual(
+                    dataset_sql_by_name["sla_history"].count(eligible_deadline_fragment),
+                    2,
+                )
 
     def test_scaffold_references_are_stable_and_valid(self) -> None:
         scaffold = json.loads(SCAFFOLD_PATH.read_text(encoding="utf-8"))
@@ -1632,6 +1665,9 @@ class SqlValidationScriptTests(unittest.TestCase):
             "monthly_miss",
             "weekly_miss",
             "fortnightly_miss",
+            "fortnightly_before_anchor",
+            "fortnightly_on_anchor",
+            "fortnightly_after_anchor",
             "daily_success",
         ):
             self.assertIn(fixed_date_case, regression_statement)
