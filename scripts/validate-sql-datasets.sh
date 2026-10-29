@@ -3,10 +3,12 @@ set -euo pipefail
 
 databricks_profile="${1:-}"
 warehouse_id="${2:-}"
-dashboard_path="${3:-src/dashboards/workflow-monitoring.lvdash.json}"
+catalog="${3:-}"
+schema="${4:-}"
+dashboard_path="${5:-src/dashboards/workflow-monitoring.lvdash.json}"
 
-if [[ -z "$databricks_profile" || -z "$warehouse_id" ]]; then
-  echo "usage: validate-sql-datasets.sh <profile> <warehouse-id> [dashboard-path]" >&2
+if [[ -z "$databricks_profile" || -z "$warehouse_id" || -z "$catalog" || -z "$schema" ]]; then
+  echo "usage: validate-sql-datasets.sh <profile> <warehouse-id> <catalog> <schema> [dashboard-path]" >&2
   exit 2
 fi
 
@@ -25,7 +27,9 @@ validate_statement() {
   jq -n \
     --arg statement "$statement" \
     --arg warehouse_id "$warehouse_id" \
-    '{statement: $statement, warehouse_id: $warehouse_id, wait_timeout: "50s", on_wait_timeout: "CANCEL", row_limit: 1}' \
+    --arg catalog "$catalog" \
+    --arg schema "$schema" \
+    '{statement: $statement, warehouse_id: $warehouse_id, catalog: $catalog, schema: $schema, wait_timeout: "50s", on_wait_timeout: "CANCEL", row_limit: 1}' \
     >"$request_path"
 
   databricks api post /api/2.0/sql/statements \

@@ -98,7 +98,7 @@ class ConfigurationTests(unittest.TestCase):
                     sla: {frequency: daily, completion_time: "07:00"}
                 """,
                 None,
-                r"workflows\[1\]\.sla: job_id duplicates workflow",
+                r"workflows\[1\]\.job_id: duplicates workflows\[0\]",
             ),
             (
                 "daily rejects weekly field",

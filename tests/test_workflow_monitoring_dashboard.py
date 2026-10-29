@@ -1046,7 +1046,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         prepare_storage.assert_not_called()
         replace_config.assert_not_called()
 
-    def test_empty_configuration_returns_before_jobs_api_work(self) -> None:
+    def test_empty_configuration_keeps_retention_and_skips_jobs_api(self) -> None:
         sdk_module = ModuleType("databricks.sdk")
         sdk_module.WorkspaceClient = lambda: SimpleNamespace(get_workspace_id=lambda: 111)
         databricks_module = ModuleType("databricks")
@@ -1093,7 +1093,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             collector.main()
 
         replace_config.assert_called_once()
-        delete_expired_state.assert_not_called()
+        delete_expired_state.assert_called_once()
         last_successful_collection.assert_not_called()
 
     def test_runtime_workspace_and_retention_are_scoped(self) -> None:
@@ -1662,6 +1662,8 @@ class SqlValidationScriptTests(unittest.TestCase):
         )
         self.assertEqual(submitted_request["profile"], "selected-profile")
         self.assertEqual(submitted_request["warehouse_id"], "warehouse-123")
+        self.assertEqual(submitted_request["catalog"], "workflow_monitoring")
+        self.assertEqual(submitted_request["schema"], "lakeflow_jobs")
         self.assertEqual(submitted_request["wait_timeout"], "50s")
         self.assertEqual(submitted_request["on_wait_timeout"], "CANCEL")
         self.assertEqual(submitted_request["row_limit"], 1)
@@ -1699,6 +1701,23 @@ class SqlValidationScriptTests(unittest.TestCase):
             validation_process.stderr,
             "sla_regressions: FAILED: synthetic SQL failure\n",
         )
+
+    def test_requires_the_schema_argument(self) -> None:
+        validation_process = subprocess.run(
+            [
+                "bash",
+                str(SQL_VALIDATION_SCRIPT_PATH),
+                "selected-profile",
+                "warehouse-123",
+                "workflow_monitoring",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(validation_process.returncode, 2)
+        self.assertIn("usage: validate-sql-datasets.sh", validation_process.stderr)
 
     @staticmethod
     def _run_sql_validation(
@@ -1757,6 +1776,8 @@ class SqlValidationScriptTests(unittest.TestCase):
                 str(SQL_VALIDATION_SCRIPT_PATH),
                 "selected-profile",
                 "warehouse-123",
+                "workflow_monitoring",
+                "lakeflow_jobs",
                 str(dashboard_fixture_path),
             ],
             check=False,

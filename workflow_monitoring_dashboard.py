@@ -66,7 +66,7 @@ def generate_dashboard(
 
     source_markers = {
         WORKFLOW_METADATA_MARKER: _render_workflow_metadata_sql(),
-        COLLECTED_RUNS_TABLE_MARKER: _qualified_collector_table(JOBS_API_RUN_STATE_TABLE),
+        COLLECTED_RUNS_TABLE_MARKER: JOBS_API_RUN_STATE_TABLE,
     }
     for source_marker, source_sql in source_markers.items():
         source_replacement_count = _replace_text_marker(
@@ -171,7 +171,7 @@ def generate_collector_job_resource(generated_resource_path: Path) -> None:
 
 
 def _render_workflow_metadata_sql() -> str:
-    job_state_table = _qualified_collector_table(JOBS_API_JOB_STATE_TABLE)
+    job_state_table = JOBS_API_JOB_STATE_TABLE
     return "\n".join(
         (
             "-- Join configured job IDs with Jobs API metadata and collection state.",
@@ -196,10 +196,6 @@ def _render_workflow_metadata_sql() -> str:
             "),",
         )
     )
-
-
-def _qualified_collector_table(table_name: str) -> str:
-    return table_name
 
 
 def _render_configured_workflows_sql(configuration: DashboardGenerationConfiguration) -> str:

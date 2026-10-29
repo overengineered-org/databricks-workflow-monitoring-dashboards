@@ -98,8 +98,7 @@ def load_workflow_monitoring_configuration(
         if configured_workflow.job_id in job_id_locations:
             previous_index = job_id_locations[configured_workflow.job_id]
             workflow_errors.append(
-                f"workflows[{workflow_index}].sla: job_id duplicates workflow "
-                f"from workflows[{previous_index}]"
+                f"workflows[{workflow_index}].job_id: duplicates workflows[{previous_index}]"
             )
         else:
             job_id_locations[configured_workflow.job_id] = workflow_index

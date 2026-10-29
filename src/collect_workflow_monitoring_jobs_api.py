@@ -512,9 +512,6 @@ def main() -> None:
         configuration,
         collection_started_at,
     )
-    if not active_job_ids:
-        return
-
     run_history_start_at = collection_started_at - timedelta(days=RUN_HISTORY_RETENTION_DAYS)
     run_state_table = _qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME)
     job_state_table = _qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME)
@@ -525,6 +522,9 @@ def main() -> None:
         workspace_id,
         run_history_start_at,
     )
+    if not active_job_ids:
+        return
+
     last_success_by_workspace_and_job = _last_successful_collection_by_workspace_and_job(
         spark_session,
         catalog_name,
