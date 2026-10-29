@@ -226,3 +226,8 @@ Collector errors are stored in `workflow_job_api_state` with bounded error text.
 | Change repository code | [Contributing](CONTRIBUTING.md) |
 | Publish a version | [Releasing](RELEASING.md) |
 | Learn AI/BI dashboards | [Databricks documentation](https://docs.databricks.com/aws/en/dashboards/) |
+
+## License
+
+This project uses the [Apache License 2.0](LICENSE).
+Files that you copy from this repository into your project keep this license.
