@@ -12,6 +12,15 @@ include:
 variables:
   warehouse_id:
     description: SQL warehouse ID used by the dashboard
+  catalog:
+    description: Unity Catalog catalog for collector tables
+    default: workflow_monitoring
+  schema:
+    description: Unity Catalog schema for collector tables
+    default: lakeflow_jobs
+  create_catalog_and_schema_if_missing:
+    description: Create the configured catalog and schema when the collector starts
+    default: "true"
   dashboard_display_name:
     description: Deployed dashboard display name
     default: Databricks Workflow Monitoring Dashboard

@@ -60,7 +60,7 @@ warehouse IDs, or organization-specific Job details.
 
 | Change | Owning source |
 | --- | --- |
-| Public YAML format | `schema/workflow-monitoring.schema.json` |
+| Public YAML format | `src/workflow-monitoring.schema.json` |
 | Configuration CLI | `cmd/workflow-monitoring/` |
 | Validation or generation | `workflow_monitoring_dashboard.py` |
 | Jobs API collector | `src/collect_workflow_monitoring_jobs_api.py` |

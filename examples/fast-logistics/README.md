@@ -47,13 +47,13 @@ Return to the repository root. Repeat the add command from
 summary. Job names come from the Jobs API.
 
 Run [README steps 4 and 5](../../README.md#4-generate-and-validate) to generate, deploy, and load
-the dashboard.
+the dashboard. Pass your workspace ID to the generate command.
 
 ## 4. Remove the example
 
 If you added the Jobs to monitoring, use `./workflow-monitoring help remove` and remove each Job
-ID. Repeat [README steps 4 and 5](../../README.md#4-generate-and-validate). Then remove the four
-disposable Jobs:
+ID. Repeat [README steps 4 and 5](../../README.md#4-generate-and-validate), including your
+workspace ID. Then remove the four disposable Jobs:
 
 ```sh
 cd examples/fast-logistics

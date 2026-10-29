@@ -58,24 +58,15 @@ func newRootCommand() *cobra.Command {
 }
 
 func newInitCommand(settings *commandSettings) *cobra.Command {
-	var workspaceID string
 	defaultTimezone := "UTC"
-	var catalogName string
-	var schemaName string
 	var isReplacementApproved bool
 	initCommand := &cobra.Command{
-		Use:   "init",
-		Short: "Create a monitoring configuration",
-		Args:  noArguments,
-		Example: "  workflow-monitoring init --workspace-id 123456789\n" +
-			"  workflow-monitoring init --workspace-id 123456789 --catalog monitoring --schema jobs",
+		Use:     "init",
+		Short:   "Create a monitoring configuration",
+		Args:    noArguments,
+		Example: "  workflow-monitoring init",
 		RunE: func(command *cobra.Command, _ []string) error {
-			configuration, validationError := initialConfiguration(
-				workspaceID,
-				defaultTimezone,
-				catalogName,
-				schemaName,
-			)
+			configuration, validationError := initialConfiguration(defaultTimezone)
 			if validationError != nil {
 				return validationError
 			}
@@ -102,28 +93,10 @@ func newInitCommand(settings *commandSettings) *cobra.Command {
 		},
 	}
 	initCommand.Flags().StringVar(
-		&workspaceID,
-		"workspace-id",
-		"",
-		"required Databricks workspace ID",
-	)
-	initCommand.Flags().StringVar(
 		&defaultTimezone,
 		"default-timezone",
 		defaultTimezone,
 		"default IANA SLA timezone",
-	)
-	initCommand.Flags().StringVar(
-		&catalogName,
-		"catalog",
-		"",
-		"existing Unity Catalog catalog",
-	)
-	initCommand.Flags().StringVar(
-		&schemaName,
-		"schema",
-		"",
-		"existing Unity Catalog schema",
 	)
 	initCommand.Flags().BoolVar(
 		&isReplacementApproved,

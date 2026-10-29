@@ -32,28 +32,29 @@ from src.collect_workflow_monitoring_jobs_api import (
     _merge_job_runs_in_batches,
     _normalized_run_state,
     _prepare_collector_storage,
-    _runtime_workspace_id,
+    _replace_workspace_sla_config,
     _stored_nonterminal_run_ids_for_reconciliation,
-    _validated_runtime_workspace_id,
+    _validated_workspace_id,
+)
+from src.workflow_monitoring_config import (
+    ActiveWorkflow,
+    ServiceLevelAgreement,
+    WorkflowMonitoringConfiguration,
 )
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
-    ActiveWorkflow,
     CollectorStorageConfiguration,
-    ServiceLevelAgreement,
-    WorkflowMonitoringConfiguration,
+    DashboardGenerationConfiguration,
     _load_custom_visualization,
-    _validate_schedule_fields,
     generate_collector_job_resource,
     generate_dashboard,
-    load_workflow_monitoring_configuration,
 )
 from workflow_monitoring_dashboard import (
     main as dashboard_main,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = REPOSITORY_ROOT / "schema/workflow-monitoring.schema.json"
+SCHEMA_PATH = REPOSITORY_ROOT / "src/workflow-monitoring.schema.json"
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 GENERATED_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
@@ -103,297 +104,6 @@ class StoredRunStateDataFrame:
         yield from self.rows
 
 
-class ConfigurationTests(unittest.TestCase):
-    """Check every public schedule and important invalid input."""
-
-    def test_supported_schedules_and_invalid_inputs(self) -> None:
-        test_cases = (
-            (
-                "malformed YAML",
-                "version: [",
-                None,
-                "parse workflow monitoring configuration",
-            ),
-            (
-                "all supported schedules",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_id: 1
-                    monitoring_status: active
-                    sla:
-                      frequency: daily
-                      completion_time: "06:00"
-                  - job_id: 2
-                    monitoring_status: active
-                    sla:
-                      frequency: weekly
-                      completion_time: "07:00"
-                      day_of_week: monday
-                  - job_id: 3
-                    monitoring_status: active
-                    sla:
-                      frequency: fortnightly
-                      completion_time: "08:00"
-                      first_deadline_date: "2026-01-12"
-                  - job_id: 4
-                    monitoring_status: active
-                    sla:
-                      frequency: monthly
-                      completion_time: "09:00"
-                      timezone: Australia/Melbourne
-                      day_of_month: 31
-                """,
-                4,
-                None,
-            ),
-            (
-                "inactive workflow remains fully valid",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_id: 8
-                    monitoring_status: inactive
-                    sla: {frequency: daily, completion_time: "06:00"}
-                """,
-                0,
-                None,
-            ),
-            (
-                "duplicate job ID",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_id: 9
-                    monitoring_status: active
-                    sla: {frequency: daily, completion_time: "06:00"}
-                  - job_id: 9
-                    monitoring_status: active
-                    sla: {frequency: daily, completion_time: "07:00"}
-                """,
-                None,
-                "job_id duplicates workflow",
-            ),
-            (
-                "daily rejects weekly field",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_id: 1
-                    monitoring_status: active
-                    sla:
-                      frequency: daily
-                      completion_time: "06:00"
-                      day_of_week: monday
-                """,
-                None,
-                "daily SLA only accepts",
-            ),
-            (
-                "invalid timezone",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: Nowhere/Invalid
-                workflows: []
-                """,
-                None,
-                "is not an IANA timezone",
-            ),
-        )
-
-        for case_name, configuration_yaml, expected_workflow_count, expected_error in test_cases:
-            with self.subTest(case_name):
-                with tempfile.TemporaryDirectory() as temporary_directory:
-                    configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-                    configuration_path.write_text(
-                        textwrap.dedent(configuration_yaml),
-                        encoding="utf-8",
-                    )
-                    if expected_error:
-                        with self.assertRaisesRegex(ValueError, expected_error):
-                            load_workflow_monitoring_configuration(configuration_path, SCHEMA_PATH)
-                        continue
-
-                    configuration = load_workflow_monitoring_configuration(
-                        configuration_path,
-                        SCHEMA_PATH,
-                    )
-                    self.assertEqual(
-                        len(configuration.active_workflows),
-                        expected_workflow_count,
-                    )
-
-    def test_schedule_specific_fields_are_required_and_exclusive(self) -> None:
-        invalid_schedule_cases = (
-            (
-                {"frequency": "weekly", "completion_time": "06:00"},
-                "weekly SLA requires a lowercase day_of_week",
-            ),
-            (
-                {
-                    "frequency": "weekly",
-                    "completion_time": "06:00",
-                    "day_of_week": "monday",
-                    "day_of_month": 1,
-                },
-                "weekly SLA does not accept first_deadline_date or day_of_month",
-            ),
-            (
-                {"frequency": "fortnightly", "completion_time": "06:00"},
-                "fortnightly SLA requires first_deadline_date",
-            ),
-            (
-                {
-                    "frequency": "fortnightly",
-                    "completion_time": "06:00",
-                    "first_deadline_date": "2026-01-12",
-                    "day_of_week": "monday",
-                },
-                "fortnightly SLA does not accept day_of_week or day_of_month",
-            ),
-            (
-                {"frequency": "monthly", "completion_time": "06:00"},
-                "monthly SLA requires day_of_month from 1 to 31",
-            ),
-            (
-                {
-                    "frequency": "monthly",
-                    "completion_time": "06:00",
-                    "day_of_month": 1,
-                    "first_deadline_date": "2026-01-12",
-                },
-                "monthly SLA does not accept day_of_week or first_deadline_date",
-            ),
-            (
-                {"frequency": "hourly", "completion_time": "06:00"},
-                "sla.frequency must be daily, weekly, fortnightly, or monthly",
-            ),
-        )
-
-        for schedule_document, expected_error in invalid_schedule_cases:
-            with self.subTest(schedule_document=schedule_document):
-                with self.assertRaisesRegex(ValueError, expected_error):
-                    _validate_schedule_fields(schedule_document)
-
-    def test_invalid_schema_document_reports_the_schema_path(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_root = Path(temporary_directory)
-            configuration_path = temporary_root / "workflow-monitoring.yml"
-            configuration_path.write_text("version: 2\n", encoding="utf-8")
-            invalid_schema_path = temporary_root / "workflow-monitoring.schema.json"
-            invalid_schema_path.write_text("{", encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "load workflow monitoring schema"):
-                load_workflow_monitoring_configuration(configuration_path, invalid_schema_path)
-
-    def test_jobs_api_storage_modes_and_job_id_are_explicit(self) -> None:
-        configuration_cases = (
-            (
-                "every workflow requires job ID",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - monitoring_status: inactive
-                    sla: {frequency: daily, completion_time: "06:00"}
-                """,
-                None,
-                "'job_id' is a required property",
-            ),
-            (
-                "default collector storage",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_id: 42
-                    monitoring_status: active
-                    sla: {frequency: daily, completion_time: "06:00"}
-                """,
-                ("workflow_monitoring", "lakeflow_jobs", True),
-                None,
-            ),
-            (
-                "job name is Jobs API metadata",
-                """
-                version: 2
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows:
-                  - job_id: 42
-                    job_name: orders
-                    monitoring_status: active
-                    sla: {frequency: daily, completion_time: "06:00"}
-                """,
-                None,
-                "Additional properties are not allowed.*job_name",
-            ),
-            (
-                "bring your own collector storage",
-                """
-                version: 2
-                jobs_api_config:
-                  catalog: monitoring_catalog
-                  schema: monitoring_schema
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows: []
-                """,
-                ("monitoring_catalog", "monitoring_schema", False),
-                None,
-            ),
-            (
-                "bring your own storage requires both names",
-                """
-                version: 2
-                jobs_api_config:
-                  catalog: monitoring_catalog
-                workspace_id: "123456789"
-                default_timezone: UTC
-                workflows: []
-                """,
-                None,
-                "'schema' is a required property",
-            ),
-        )
-
-        for case_name, configuration_yaml, expected_storage, expected_error in configuration_cases:
-            with self.subTest(case_name), tempfile.TemporaryDirectory() as temporary_directory:
-                configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-                configuration_path.write_text(
-                    textwrap.dedent(configuration_yaml),
-                    encoding="utf-8",
-                )
-                if expected_error:
-                    with self.assertRaisesRegex(ValueError, expected_error):
-                        load_workflow_monitoring_configuration(configuration_path, SCHEMA_PATH)
-                    continue
-
-                configuration = load_workflow_monitoring_configuration(
-                    configuration_path,
-                    SCHEMA_PATH,
-                )
-                self.assertEqual(
-                    (
-                        configuration.collector_storage.catalog,
-                        configuration.collector_storage.schema,
-                        configuration.collector_storage.create_catalog_and_schema_if_missing,
-                    ),
-                    expected_storage,
-                )
-
-
 class DashboardGenerationTests(unittest.TestCase):
     """Check SQL escaping, paused monitoring, markers, and stable output."""
 
@@ -402,7 +112,7 @@ class DashboardGenerationTests(unittest.TestCase):
         configurations = (
             (
                 "active workflow",
-                WorkflowMonitoringConfiguration(
+                DashboardGenerationConfiguration(
                     workspace_id="123456789",
                     collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
@@ -421,7 +131,7 @@ class DashboardGenerationTests(unittest.TestCase):
             ),
             (
                 "fortnightly workflow",
-                WorkflowMonitoringConfiguration(
+                DashboardGenerationConfiguration(
                     workspace_id="123456789",
                     collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
@@ -440,7 +150,7 @@ class DashboardGenerationTests(unittest.TestCase):
             ),
             (
                 "weekly workflow",
-                WorkflowMonitoringConfiguration(
+                DashboardGenerationConfiguration(
                     workspace_id="123456789",
                     collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
@@ -459,7 +169,7 @@ class DashboardGenerationTests(unittest.TestCase):
             ),
             (
                 "zero active workflows",
-                WorkflowMonitoringConfiguration(
+                DashboardGenerationConfiguration(
                     workspace_id="123456789",
                     collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(),
@@ -507,7 +217,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 )
 
     def test_generation_requires_a_scaffold_marker(self) -> None:
-        configuration = WorkflowMonitoringConfiguration(
+        configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             active_workflows=(),
             collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
@@ -524,7 +234,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 )
 
     def test_generation_rejects_invalid_scaffolds_and_duplicate_markers(self) -> None:
-        configuration = WorkflowMonitoringConfiguration(
+        configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             active_workflows=(),
             collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
@@ -627,7 +337,7 @@ class DashboardGenerationTests(unittest.TestCase):
                         _load_custom_visualization(visualization_path)
 
     def test_generation_injects_valid_custom_visualizations(self) -> None:
-        configuration = WorkflowMonitoringConfiguration(
+        configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             active_workflows=(),
             collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
@@ -688,7 +398,7 @@ class DashboardGenerationTests(unittest.TestCase):
                     self.assertLessEqual(referenced_fields - derived_fields, encoded_fields)
 
     def test_generation_uses_governed_tables_and_collector_job(self) -> None:
-        workflow_monitoring_configuration = WorkflowMonitoringConfiguration(
+        workflow_monitoring_configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             collector_storage=CollectorStorageConfiguration(
                 catalog="monitoring_catalog",
@@ -711,7 +421,7 @@ class DashboardGenerationTests(unittest.TestCase):
             dashboard_path = temporary_path / "dashboard.json"
             resource_path = temporary_path / "workflow-monitoring.jobs-api.job.yml"
             generate_dashboard(workflow_monitoring_configuration, SCAFFOLD_PATH, dashboard_path)
-            generate_collector_job_resource(workflow_monitoring_configuration, resource_path)
+            generate_collector_job_resource(resource_path)
 
             dashboard_text = dashboard_path.read_text(encoding="utf-8")
             self.assertIn(
@@ -728,9 +438,7 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertIn("COALESCE(collected_job.job_name", dashboard_text)
             resource_text = resource_path.read_text(encoding="utf-8")
             self.assertIn(
-                "# Set workspace_id in workflow-monitoring.yml or with the "
-                "workflow-monitoring CLI.",
-                resource_text,
+                "# Generated by workflow_monitoring_dashboard.py. Do not edit.", resource_text
             )
             resource_document = yaml.safe_load(resource_text)
             collector_job = resource_document["resources"]["jobs"][
@@ -740,13 +448,37 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertEqual(collector_job["schedule"]["pause_status"], "UNPAUSED")
             self.assertEqual(collector_job["max_concurrent_runs"], 1)
             self.assertNotIn("queue", collector_job)
-            self.assertNotIn("parameters", collector_job)
-            collector_task_parameters = collector_job["tasks"][0]["notebook_task"][
-                "base_parameters"
-            ]
-            self.assertEqual(collector_task_parameters["monitored_job_ids_json"], "[42]")
             self.assertEqual(
-                collector_task_parameters["create_catalog_and_schema_if_missing"], "false"
+                collector_job["environments"],
+                [
+                    {
+                        "environment_key": "workflow_monitoring_collector",
+                        "spec": {
+                            "environment_version": "6",
+                            "dependencies": ["jsonschema==4.26.0", "pyyaml==6.0.3"],
+                        },
+                    }
+                ],
+            )
+            collector_task = collector_job["tasks"][0]
+            self.assertEqual(collector_task["environment_key"], "workflow_monitoring_collector")
+            self.assertNotIn("parameters", collector_job)
+            self.assertEqual(
+                collector_task["spark_python_task"]["python_file"],
+                "../src/collect_workflow_monitoring_jobs_api.py",
+            )
+            self.assertEqual(
+                collector_task["spark_python_task"]["parameters"],
+                [
+                    "--config-path",
+                    "${workspace.file_path}/workflow-monitoring.yml",
+                    "--catalog",
+                    "${var.catalog}",
+                    "--schema",
+                    "${var.schema}",
+                    "--create-catalog-and-schema-if-missing",
+                    "${var.create_catalog_and_schema_if_missing}",
+                ],
             )
             self.assertEqual(collector_job["tasks"][1]["run_if"], "ALL_DONE")
             self.assertEqual(
@@ -754,27 +486,14 @@ class DashboardGenerationTests(unittest.TestCase):
                 "${resources.dashboards.workflow_monitoring.id}",
             )
 
-    def test_zero_active_workflows_pause_collector(self) -> None:
-        configuration = WorkflowMonitoringConfiguration(
-            workspace_id="123456789",
-            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
-            active_workflows=(),
-        )
+    def test_zero_active_workflows_keep_collector_running(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             resource_path = Path(temporary_directory) / "workflow-monitoring.jobs-api.job.yml"
-            generate_collector_job_resource(configuration, resource_path)
+            generate_collector_job_resource(resource_path)
             collector_job = yaml.safe_load(resource_path.read_text(encoding="utf-8"))["resources"][
                 "jobs"
             ]["workflow_monitoring_jobs_api_collector"]
-            self.assertEqual(collector_job["schedule"]["pause_status"], "PAUSED")
-            self.assertNotIn("parameters", collector_job)
-            collector_task_parameters = collector_job["tasks"][0]["notebook_task"][
-                "base_parameters"
-            ]
-            self.assertEqual(collector_task_parameters["monitored_job_ids_json"], "[]")
-            self.assertEqual(
-                collector_task_parameters["create_catalog_and_schema_if_missing"], "true"
-            )
+            self.assertEqual(collector_job["schedule"]["pause_status"], "UNPAUSED")
 
 
 class DashboardCommandTests(unittest.TestCase):
@@ -787,8 +506,7 @@ class DashboardCommandTests(unittest.TestCase):
             configuration_path.write_text(
                 textwrap.dedent(
                     """\
-                    version: 2
-                    workspace_id: "123456789"
+                    version: 3
                     default_timezone: UTC
                     workflows: []
                     """
@@ -829,6 +547,8 @@ class DashboardCommandTests(unittest.TestCase):
                         str(dashboard_output_path),
                         "--jobs-api-resource-output",
                         str(collector_resource_output_path),
+                        "--workspace-id",
+                        "123456789",
                     ]
                 )
             self.assertEqual(generation_exit_code, 0)
@@ -1089,7 +809,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         bring_your_own_sql = "\n".join(bring_your_own_spark_session.statements)
         self.assertNotIn("CREATE CATALOG", bring_your_own_sql)
         self.assertNotIn("CREATE SCHEMA", bring_your_own_sql)
-        self.assertEqual(bring_your_own_sql.count("CREATE TABLE IF NOT EXISTS"), 2)
+        self.assertEqual(bring_your_own_sql.count("CREATE TABLE IF NOT EXISTS"), 3)
 
         automatic_spark_session = RecordingSparkSession()
         _prepare_collector_storage(
@@ -1101,25 +821,104 @@ class JobsApiCollectorTests(unittest.TestCase):
         automatic_sql = "\n".join(automatic_spark_session.statements)
         self.assertIn("CREATE CATALOG IF NOT EXISTS", automatic_sql)
         self.assertIn("CREATE SCHEMA IF NOT EXISTS", automatic_sql)
-        self.assertEqual(automatic_sql.count("CREATE TABLE IF NOT EXISTS"), 2)
+        self.assertEqual(automatic_sql.count("CREATE TABLE IF NOT EXISTS"), 3)
+        self.assertIn("workflow_sla_config", automatic_sql)
 
-    def test_runtime_workspace_and_retention_are_scoped(self) -> None:
-        workspace_id_value = SimpleNamespace(get=lambda: "111")
-        notebook_context = SimpleNamespace(workspaceId=lambda: workspace_id_value)
-        notebook_handle = SimpleNamespace(getContext=lambda: notebook_context)
-        runtime_utilities = SimpleNamespace(notebook=lambda: notebook_handle)
-        notebook_utilities = SimpleNamespace(
-            notebook=SimpleNamespace(
-                entry_point=SimpleNamespace(getDbutils=lambda: runtime_utilities)
+    def test_sla_config_write_replaces_one_workspace_atomically(self) -> None:
+        recorded_write: dict[str, Any] = {}
+
+        class RecordingConfigWriter:
+            def format(self, format_name: str) -> RecordingConfigWriter:
+                recorded_write["format"] = format_name
+                return self
+
+            def mode(self, write_mode: str) -> RecordingConfigWriter:
+                recorded_write["mode"] = write_mode
+                return self
+
+            def option(self, option_name: str, option_value: str) -> RecordingConfigWriter:
+                recorded_write[option_name] = option_value
+                return self
+
+            def saveAsTable(self, table_name: str) -> None:
+                recorded_write["table"] = table_name
+
+        class RecordingConfigDataFrame:
+            def __init__(self) -> None:
+                self.write = RecordingConfigWriter()
+
+        def create_data_frame(rows: list[dict[str, Any]], schema: Any) -> RecordingConfigDataFrame:
+            recorded_write["rows"] = rows
+            recorded_write["schema"] = schema
+            return RecordingConfigDataFrame()
+
+        loaded_at = datetime(2026, 10, 29, 1, 2, 3)
+        configuration = WorkflowMonitoringConfiguration(
+            active_workflows=(
+                ActiveWorkflow(
+                    job_id=42,
+                    sla=ServiceLevelAgreement(
+                        frequency="daily",
+                        completion_time="06:00",
+                        timezone="UTC",
+                    ),
+                ),
             )
         )
-        self.assertEqual(_runtime_workspace_id(notebook_utilities), "111")
-        self.assertEqual(
-            _validated_runtime_workspace_id("111", notebook_utilities),
-            "111",
-        )
-        with self.assertRaisesRegex(ValueError, "does not match runtime workspace 111"):
-            _validated_runtime_workspace_id("222", notebook_utilities)
+        with patch.object(collector, "_sla_config_schema", return_value="schema"):
+            _replace_workspace_sla_config(
+                SimpleNamespace(createDataFrame=create_data_frame),
+                "monitoring",
+                "jobs",
+                "111",
+                configuration,
+                loaded_at,
+            )
+
+        self.assertEqual(recorded_write["format"], "delta")
+        self.assertEqual(recorded_write["mode"], "overwrite")
+        self.assertEqual(recorded_write["replaceWhere"], "workspace_id = '111'")
+        self.assertEqual(recorded_write["table"], "`monitoring`.`jobs`.`workflow_sla_config`")
+        self.assertEqual(recorded_write["rows"][0]["configured_job_id"], "42")
+        self.assertEqual(recorded_write["rows"][0]["config_loaded_at"], loaded_at)
+
+    def test_invalid_configuration_writes_nothing(self) -> None:
+        with (
+            patch.object(
+                collector,
+                "load_workflow_monitoring_configuration",
+                side_effect=ValueError("configuration is invalid"),
+            ),
+            patch.object(collector, "_spark_session") as spark_session,
+            patch.object(collector, "_prepare_collector_storage") as prepare_storage,
+            patch.object(collector, "_replace_workspace_sla_config") as replace_config,
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "collector",
+                    "--config-path",
+                    "workflow-monitoring.yml",
+                    "--catalog",
+                    "monitoring",
+                    "--schema",
+                    "jobs",
+                    "--create-catalog-and-schema-if-missing",
+                    "false",
+                ],
+            ),
+            self.assertRaisesRegex(ValueError, "configuration is invalid"),
+        ):
+            collector.main()
+
+        spark_session.assert_not_called()
+        prepare_storage.assert_not_called()
+        replace_config.assert_not_called()
+
+    def test_runtime_workspace_and_retention_are_scoped(self) -> None:
+        self.assertEqual(_validated_workspace_id("111"), "111")
+        with self.assertRaisesRegex(ValueError, "must contain only digits"):
+            _validated_workspace_id("workspace-name")
 
         recorded_statements: list[str] = []
         spark_session = SimpleNamespace(sql=recorded_statements.append)
@@ -1179,6 +978,11 @@ class JobsApiCollectorTests(unittest.TestCase):
             "RUN_STATE_WRITE_BATCH_SIZE = 500",
             "CREATE CATALOG IF NOT EXISTS",
             "CREATE SCHEMA IF NOT EXISTS",
+            'SLA_CONFIG_TABLE_NAME = "workflow_sla_config"',
+            "get_workspace_id()",
+            "load_workflow_monitoring_configuration(",
+            "SparkSession.builder.getOrCreate()",
+            '.option("replaceWhere"',
             ".where(f\"workspace_id = '{workspace_id}'\")",
             "(workspace_id, str(job_id))",
             ".whenMatchedUpdateAll()",
@@ -1205,6 +1009,13 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
         for removed_fragment in removed_complexity:
             self.assertNotIn(removed_fragment, collector_source)
+        for removed_run_time_access in (
+            "globals(",
+            "dbutils",
+            "monitored_job_ids" + "_json",
+            "notebook_task",
+        ):
+            self.assertNotIn(removed_run_time_access, collector_source)
 
     def test_run_state_merges_are_memory_bounded(self) -> None:
         job_runs = (
@@ -1440,7 +1251,7 @@ class JobsApiCollectorTests(unittest.TestCase):
             ),
             get_run=Mock(side_effect=retrieve_stored_run),
         )
-        workspace_client = SimpleNamespace(jobs=jobs_api)
+        workspace_client = SimpleNamespace(jobs=jobs_api, get_workspace_id=lambda: 111)
         sdk_module = ModuleType("databricks.sdk")
         sdk_module.__path__ = []
         sdk_module.WorkspaceClient = lambda: workspace_client
@@ -1449,22 +1260,6 @@ class JobsApiCollectorTests(unittest.TestCase):
         databricks_module = ModuleType("databricks")
         databricks_module.__path__ = []
 
-        notebook_context = SimpleNamespace(workspaceId=lambda: SimpleNamespace(get=lambda: "111"))
-        notebook_handle = SimpleNamespace(getContext=lambda: notebook_context)
-        runtime_utilities = SimpleNamespace(notebook=lambda: notebook_handle)
-        widget_values = {
-            "catalog_name": "monitoring",
-            "schema_name": "jobs",
-            "create_catalog_and_schema_if_missing": "false",
-            "workspace_id": "111",
-            "monitored_job_ids_json": "[42]",
-        }
-        notebook_utilities = SimpleNamespace(
-            widgets=SimpleNamespace(get=widget_values.__getitem__),
-            notebook=SimpleNamespace(
-                entry_point=SimpleNamespace(getDbutils=lambda: runtime_utilities)
-            ),
-        )
         spark_session = SimpleNamespace(
             table=lambda _table_name: StoredRunStateDataFrame(list(stored_run_rows.values()))
         )
@@ -1516,9 +1311,40 @@ class JobsApiCollectorTests(unittest.TestCase):
                     "databricks.sdk.errors": sdk_errors_module,
                 },
             ),
-            patch.object(collector, "spark", spark_session, create=True),
-            patch.object(collector, "dbutils", notebook_utilities, create=True),
+            patch.object(collector, "_spark_session", return_value=spark_session),
+            patch.object(
+                collector,
+                "load_workflow_monitoring_configuration",
+                return_value=WorkflowMonitoringConfiguration(
+                    active_workflows=(
+                        ActiveWorkflow(
+                            job_id=42,
+                            sla=ServiceLevelAgreement(
+                                frequency="daily",
+                                completion_time="06:00",
+                                timezone="UTC",
+                            ),
+                        ),
+                    )
+                ),
+            ),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "collector",
+                    "--config-path",
+                    "workflow-monitoring.yml",
+                    "--catalog",
+                    "monitoring",
+                    "--schema",
+                    "jobs",
+                    "--create-catalog-and-schema-if-missing",
+                    "false",
+                ],
+            ),
             patch.object(collector, "_prepare_collector_storage"),
+            patch.object(collector, "_replace_workspace_sla_config"),
             patch.object(
                 collector,
                 "_delete_expired_run_state",
