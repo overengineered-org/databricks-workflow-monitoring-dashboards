@@ -794,6 +794,11 @@ class DashboardScaffoldTests(unittest.TestCase):
 class JobsApiCollectorTests(unittest.TestCase):
     """Protect the collector's durable storage and polling guarantees."""
 
+    def test_collector_is_a_plain_python_file(self) -> None:
+        # spark_python_task rejects notebooks, so the collector must not start with a notebook header.
+        first_line = JOBS_API_COLLECTOR_PATH.read_text(encoding="utf-8").splitlines()[0]
+        self.assertNotEqual(first_line, "# Databricks notebook source")
+
     def test_storage_creation_respects_selected_mode(self) -> None:
         class RecordingSparkSession:
             def __init__(self) -> None:

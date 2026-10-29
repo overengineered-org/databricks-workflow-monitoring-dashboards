@@ -1,4 +1,3 @@
-# Databricks notebook source
 """Poll configured Lakeflow Jobs into two governed managed Delta tables."""
 
 from __future__ import annotations
