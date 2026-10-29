@@ -50,6 +50,19 @@ blocker.
 - Comment non-obvious intent and constraints only.
 - Do not use em dashes in code, comments, documentation, or commit messages.
 
+### Live Databricks cost
+
+The maintainer tests on Databricks Free Edition. Never do anything that can cost money.
+
+- Run only live commands that start no compute. Examples: `databricks bundle validate` and
+  read-only list or get API calls.
+- Do not start a SQL warehouse, run a Job or notebook, or deploy a bundle without approval for
+  that command in the current request.
+- Free Edition compute has a fair-usage quota. Above the quota, compute stops for the rest of
+  the day.
+- Never use a paid workspace for testing.
+- Report each skipped live check as not run, with the reason.
+
 ## Pipelines: local act only
 
 This repository must not run pipelines on GitHub.
