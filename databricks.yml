@@ -20,7 +20,7 @@ variables:
     default: lakeflow_jobs
   create_catalog_and_schema_if_missing:
     description: Create the configured catalog and schema when the collector starts
-    default: "true"
+    default: "false"
   dashboard_display_name:
     description: Deployed dashboard display name
     default: Databricks Workflow Monitoring Dashboard

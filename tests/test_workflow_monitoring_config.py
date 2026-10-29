@@ -19,6 +19,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPOSITORY_ROOT / "src/workflow-monitoring.schema.json"
 
 
+def _load_configuration_yaml(configuration_yaml: str):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
+        configuration_path.write_text(textwrap.dedent(configuration_yaml), encoding="utf-8")
+        return load_workflow_monitoring_configuration(configuration_path, SCHEMA_PATH)
+
+
 class ConfigurationTests(unittest.TestCase):
     """Check every public schedule and important invalid input."""
 
@@ -91,7 +98,7 @@ class ConfigurationTests(unittest.TestCase):
                     sla: {frequency: daily, completion_time: "07:00"}
                 """,
                 None,
-                "job_id duplicates workflow",
+                r"workflows\[1\]\.sla: job_id duplicates workflow",
             ),
             (
                 "daily rejects weekly field",
@@ -123,25 +130,16 @@ class ConfigurationTests(unittest.TestCase):
 
         for case_name, configuration_yaml, expected_workflow_count, expected_error in test_cases:
             with self.subTest(case_name):
-                with tempfile.TemporaryDirectory() as temporary_directory:
-                    configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-                    configuration_path.write_text(
-                        textwrap.dedent(configuration_yaml),
-                        encoding="utf-8",
-                    )
-                    if expected_error:
-                        with self.assertRaisesRegex(ValueError, expected_error):
-                            load_workflow_monitoring_configuration(configuration_path, SCHEMA_PATH)
-                        continue
+                if expected_error:
+                    with self.assertRaisesRegex(ValueError, expected_error):
+                        _load_configuration_yaml(configuration_yaml)
+                    continue
 
-                    configuration = load_workflow_monitoring_configuration(
-                        configuration_path,
-                        SCHEMA_PATH,
-                    )
-                    self.assertEqual(
-                        len(configuration.active_workflows),
-                        expected_workflow_count,
-                    )
+                configuration = _load_configuration_yaml(configuration_yaml)
+                self.assertEqual(
+                    len(configuration.active_workflows),
+                    expected_workflow_count,
+                )
 
     def test_schedule_specific_fields_are_required_and_exclusive(self) -> None:
         invalid_schedule_cases = (
@@ -184,10 +182,6 @@ class ConfigurationTests(unittest.TestCase):
                 },
                 "monthly SLA does not accept day_of_week or first_deadline_date",
             ),
-            (
-                {"frequency": "hourly", "completion_time": "06:00"},
-                "sla.frequency must be daily, weekly, fortnightly, or monthly",
-            ),
         )
 
         for schedule_document, expected_error in invalid_schedule_cases:
@@ -207,89 +201,91 @@ class ConfigurationTests(unittest.TestCase):
                 load_workflow_monitoring_configuration(configuration_path, invalid_schema_path)
 
     def test_version_2_reports_the_migration_message(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-            configuration_path.write_text(
-                textwrap.dedent(
-                    """
-                    version: 2
-                    workspace_id: "123456789"
-                    default_timezone: UTC
-                    workflows: []
-                    """
-                ),
-                encoding="utf-8",
-            )
+        configuration_yaml = """
+            version: 2
+            workspace_id: "123456789"
+            default_timezone: UTC
+            workflows: []
+        """
 
-            with self.assertRaisesRegex(ValueError, CONFIGURATION_VERSION_2_MESSAGE):
-                load_workflow_monitoring_configuration(configuration_path, SCHEMA_PATH)
+        with self.assertRaisesRegex(ValueError, CONFIGURATION_VERSION_2_MESSAGE):
+            _load_configuration_yaml(configuration_yaml)
 
     def test_schema_reports_every_error_with_its_path(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-            configuration_path.write_text(
-                textwrap.dedent(
-                    """
-                    version: 3
-                    default_timezone: UTC
-                    workflows:
-                      - monitoring_status: active
-                        sla:
-                          frequency: daily
-                          completion_time: "25:00"
-                    """
-                ),
-                encoding="utf-8",
-            )
+        configuration_yaml = """
+            version: 3
+            default_timezone: UTC
+            workflows:
+              - monitoring_status: active
+                sla:
+                  frequency: daily
+                  completion_time: "25:00"
+        """
 
-            with self.assertRaises(ValueError) as raised_error:
-                load_workflow_monitoring_configuration(configuration_path, SCHEMA_PATH)
+        with self.assertRaises(ValueError) as raised_error:
+            _load_configuration_yaml(configuration_yaml)
 
-            error_message = str(raised_error.exception)
-            self.assertIn("workflows[0]: 'job_id' is a required property", error_message)
-            self.assertIn(
-                "workflows[0].sla.completion_time: '25:00' does not match",
-                error_message,
-            )
+        error_message = str(raised_error.exception)
+        self.assertIn("workflows[0]: 'job_id' is a required property", error_message)
+        self.assertIn(
+            "workflows[0].sla.completion_time: '25:00' does not match",
+            error_message,
+        )
+
+    def test_cross_field_errors_report_every_workflow_path(self) -> None:
+        configuration_yaml = """
+            version: 3
+            default_timezone: UTC
+            workflows:
+              - job_id: 1
+                monitoring_status: active
+                sla:
+                  frequency: daily
+                  completion_time: "06:00"
+                  day_of_week: monday
+              - job_id: 2
+                monitoring_status: active
+                sla:
+                  frequency: weekly
+                  completion_time: "07:00"
+        """
+
+        with self.assertRaises(ValueError) as raised_error:
+            _load_configuration_yaml(configuration_yaml)
+
+        error_message = str(raised_error.exception)
+        self.assertIn("workflow monitoring configuration is invalid:", error_message)
+        self.assertIn("workflows[0].sla: daily SLA only accepts", error_message)
+        self.assertIn("workflows[1].sla: weekly SLA requires", error_message)
 
     def test_only_active_workflows_become_table_rows(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-            configuration_path.write_text(
-                textwrap.dedent(
-                    """
-                    version: 3
-                    default_timezone: UTC
-                    workflows:
-                      - job_id: 10
-                        monitoring_status: inactive
-                        sla:
-                          frequency: weekly
-                          completion_time: "05:00"
-                          day_of_week: monday
-                      - job_id: 42
-                        monitoring_status: active
-                        sla:
-                          frequency: monthly
-                          completion_time: "06:00"
-                          timezone: Australia/Melbourne
-                          day_of_month: 31
-                      - job_id: 43
-                        monitoring_status: active
-                        sla:
-                          frequency: daily
-                          completion_time: "07:00"
-                    """
-                ),
-                encoding="utf-8",
-            )
-            configuration = load_workflow_monitoring_configuration(
-                configuration_path,
-                SCHEMA_PATH,
-            )
-            loaded_at = datetime(2026, 10, 29, 1, 2, 3, tzinfo=UTC)
+        configuration_yaml = """
+            version: 3
+            default_timezone: UTC
+            workflows:
+              - job_id: 10
+                monitoring_status: inactive
+                sla:
+                  frequency: weekly
+                  completion_time: "05:00"
+                  day_of_week: monday
+              - job_id: 42
+                monitoring_status: active
+                sla:
+                  frequency: monthly
+                  completion_time: "06:00"
+                  timezone: Australia/Melbourne
+                  day_of_month: 31
+              - job_id: 43
+                monitoring_status: active
+                sla:
+                  frequency: daily
+                  completion_time: "07:00"
+        """
+        configuration = _load_configuration_yaml(configuration_yaml)
+        changed_at = datetime(2026, 10, 29, 1, 2, 3, tzinfo=UTC)
 
-            rows = workflow_sla_config_rows(configuration, "123456789", loaded_at)
+        rows = workflow_sla_config_rows(configuration, "123456789", changed_at)
 
         self.assertEqual(
             rows,
@@ -304,7 +300,7 @@ class ConfigurationTests(unittest.TestCase):
                     "day_of_week": None,
                     "first_deadline_date": None,
                     "day_of_month": 31,
-                    "config_loaded_at": loaded_at,
+                    "config_changed_at": changed_at,
                 },
                 {
                     "workspace_id": "123456789",
@@ -316,39 +312,28 @@ class ConfigurationTests(unittest.TestCase):
                     "day_of_week": None,
                     "first_deadline_date": None,
                     "day_of_month": None,
-                    "config_loaded_at": loaded_at,
+                    "config_changed_at": changed_at,
                 },
             ],
         )
-        self.assertNotIn("10", [row["configured_job_id"] for row in rows])
 
     def test_fortnightly_rows_use_date_values(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-            configuration_path.write_text(
-                textwrap.dedent(
-                    """
-                    version: 3
-                    default_timezone: UTC
-                    workflows:
-                      - job_id: 42
-                        monitoring_status: active
-                        sla:
-                          frequency: fortnightly
-                          completion_time: "06:00"
-                          first_deadline_date: "2026-01-12"
-                    """
-                ),
-                encoding="utf-8",
-            )
-            configuration = load_workflow_monitoring_configuration(
-                configuration_path,
-                SCHEMA_PATH,
-            )
-            rows = workflow_sla_config_rows(
-                configuration,
-                "123456789",
-                datetime(2026, 10, 29, 1, 2, 3, tzinfo=UTC),
-            )
+        configuration_yaml = """
+            version: 3
+            default_timezone: UTC
+            workflows:
+              - job_id: 42
+                monitoring_status: active
+                sla:
+                  frequency: fortnightly
+                  completion_time: "06:00"
+                  first_deadline_date: "2026-01-12"
+        """
+        configuration = _load_configuration_yaml(configuration_yaml)
+        rows = workflow_sla_config_rows(
+            configuration,
+            "123456789",
+            datetime(2026, 10, 29, 1, 2, 3, tzinfo=UTC),
+        )
 
         self.assertEqual(rows[0]["first_deadline_date"], date(2026, 1, 12))

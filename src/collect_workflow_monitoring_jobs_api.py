@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import re
-import sys
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,12 +13,16 @@ try:
     from .workflow_monitoring_config import (
         WorkflowMonitoringConfiguration,
         load_workflow_monitoring_configuration,
+        validated_unity_catalog_identifier,
+        validated_workspace_id,
         workflow_sla_config_rows,
     )
 except ImportError:  # The spark_python_task runs this file directly from src/.
     from workflow_monitoring_config import (
         WorkflowMonitoringConfiguration,
         load_workflow_monitoring_configuration,
+        validated_unity_catalog_identifier,
+        validated_workspace_id,
         workflow_sla_config_rows,
     )
 
@@ -31,8 +33,6 @@ CONFIGURATION_SCHEMA_PATH = Path(__file__).with_name("workflow-monitoring.schema
 RUN_HISTORY_RETENTION_DAYS = 60
 INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15
 RUN_STATE_WRITE_BATCH_SIZE = 500
-UNITY_CATALOG_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
-WORKSPACE_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 SUCCESS_TERMINATION_CODES = {"SUCCESS"}
 CANCELLED_TERMINATION_CODES = {"CANCELED", "USER_CANCELED"}
 SKIPPED_TERMINATION_CODES = {
@@ -83,44 +83,6 @@ def _job_state_schema() -> Any:
             StructField("last_error_message", StringType(), True),
         ]
     )
-
-
-def _sla_config_schema() -> Any:
-    from pyspark.sql.types import (  # type: ignore[import-not-found]
-        DateType,
-        IntegerType,
-        StringType,
-        StructField,
-        StructType,
-        TimestampType,
-    )
-
-    return StructType(
-        [
-            StructField("workspace_id", StringType(), False),
-            StructField("configured_order", IntegerType(), False),
-            StructField("configured_job_id", StringType(), False),
-            StructField("frequency", StringType(), False),
-            StructField("completion_time", StringType(), False),
-            StructField("timezone", StringType(), False),
-            StructField("day_of_week", StringType(), True),
-            StructField("first_deadline_date", DateType(), True),
-            StructField("day_of_month", IntegerType(), True),
-            StructField("config_loaded_at", TimestampType(), False),
-        ]
-    )
-
-
-def _validated_unity_catalog_identifier(identifier_name: str, identifier_value: str) -> str:
-    if not UNITY_CATALOG_IDENTIFIER_PATTERN.fullmatch(identifier_value):
-        raise ValueError(f"{identifier_name} is not a supported Unity Catalog identifier")
-    return identifier_value
-
-
-def _validated_workspace_id(workspace_id: str) -> str:
-    if not WORKSPACE_ID_PATTERN.fullmatch(workspace_id):
-        raise ValueError("workspace_id must contain only digits and cannot start with zero")
-    return workspace_id
 
 
 def _quoted_identifier(identifier_value: str) -> str:
@@ -238,7 +200,7 @@ def _prepare_collector_storage(
           day_of_week STRING COMMENT 'Weekly SLA day',
           first_deadline_date DATE COMMENT 'First deadline in a 14-day SLA schedule',
           day_of_month INT COMMENT 'Monthly SLA day',
-          config_loaded_at TIMESTAMP NOT NULL COMMENT 'Latest valid load time in UTC'
+          config_changed_at TIMESTAMP NOT NULL COMMENT 'Latest valid change time in UTC'
         ) USING DELTA
         COMMENT 'Latest valid workflow monitoring configuration written by the collector'
         """
@@ -251,19 +213,39 @@ def _replace_workspace_sla_config(
     schema_name: str,
     workspace_id: str,
     configuration: WorkflowMonitoringConfiguration,
-    config_loaded_at: datetime,
+    config_changed_at: datetime,
 ) -> None:
-    """Replace one workspace's config rows in a single Delta transaction."""
+    """Replace one workspace's config rows in one transaction when they changed."""
 
-    config_dataframe = spark_session.createDataFrame(
-        workflow_sla_config_rows(configuration, workspace_id, config_loaded_at),
-        _sla_config_schema(),
-    )
+    sla_table = _qualified_table_name(catalog_name, schema_name, SLA_CONFIG_TABLE_NAME)
+    stored_sla_table = spark_session.table(sla_table)
+    stored_rows = [
+        {
+            column_name: column_value
+            for column_name, column_value in stored_row.asDict().items()
+            if column_name != "config_changed_at"
+        }
+        for stored_row in stored_sla_table.where(f"workspace_id = '{workspace_id}'").collect()
+    ]
+    stored_rows.sort(key=lambda row: row["configured_order"])
+    new_rows = workflow_sla_config_rows(configuration, workspace_id, config_changed_at)
+    new_rows_without_timestamp = [
+        {
+            column_name: column_value
+            for column_name, column_value in row.items()
+            if column_name != "config_changed_at"
+        }
+        for row in new_rows
+    ]
+    if stored_rows == new_rows_without_timestamp:
+        return
+
+    config_dataframe = spark_session.createDataFrame(new_rows, stored_sla_table.schema)
     (
         config_dataframe.write.format("delta")
         .mode("overwrite")
         .option("replaceWhere", f"workspace_id = '{workspace_id}'")
-        .saveAsTable(_qualified_table_name(catalog_name, schema_name, SLA_CONFIG_TABLE_NAME))
+        .saveAsTable(sla_table)
     )
 
 
@@ -498,23 +480,24 @@ def _spark_session() -> Any:
 
 
 def main() -> None:
-    command_arguments = _build_argument_parser().parse_args(sys.argv[1:])
+    command_arguments = _build_argument_parser().parse_args()
     configuration = load_workflow_monitoring_configuration(
         command_arguments.config_path,
         CONFIGURATION_SCHEMA_PATH,
     )
     from databricks.sdk import WorkspaceClient  # type: ignore[import-not-found]
 
-    catalog_name = _validated_unity_catalog_identifier("catalog_name", command_arguments.catalog)
-    schema_name = _validated_unity_catalog_identifier("schema_name", command_arguments.schema)
+    catalog_name = validated_unity_catalog_identifier("catalog_name", command_arguments.catalog)
+    schema_name = validated_unity_catalog_identifier("schema_name", command_arguments.schema)
     create_catalog_and_schema_if_missing = (
         command_arguments.create_catalog_and_schema_if_missing == "true"
     )
     active_job_ids = [workflow.job_id for workflow in configuration.active_workflows]
 
+    collection_started_at = datetime.now(UTC).replace(tzinfo=None)
     spark_session = _spark_session()
     workspace_client = WorkspaceClient()
-    workspace_id = _validated_workspace_id(str(workspace_client.get_workspace_id()))
+    workspace_id = validated_workspace_id(str(workspace_client.get_workspace_id()))
     _prepare_collector_storage(
         spark_session,
         catalog_name,
@@ -527,10 +510,11 @@ def main() -> None:
         schema_name,
         workspace_id,
         configuration,
-        datetime.now(UTC).replace(tzinfo=None),
+        collection_started_at,
     )
+    if not active_job_ids:
+        return
 
-    collection_started_at = datetime.now(UTC).replace(tzinfo=None)
     run_history_start_at = collection_started_at - timedelta(days=RUN_HISTORY_RETENTION_DAYS)
     run_state_table = _qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME)
     job_state_table = _qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME)

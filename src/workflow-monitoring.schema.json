@@ -61,7 +61,6 @@
         },
         "day_of_week": {
           "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
-          "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
           "description": "Required only for weekly schedules."
         },
         "first_deadline_date": {

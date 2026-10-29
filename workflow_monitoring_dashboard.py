@@ -14,6 +14,7 @@ import yaml
 from src.workflow_monitoring_config import (
     ActiveWorkflow,
     load_workflow_monitoring_configuration,
+    validated_workspace_id,
 )
 
 DEFAULT_CONFIGURATION_PATH = Path("workflow-monitoring.yml")
@@ -24,8 +25,6 @@ DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.jo
 CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
 WORKFLOW_METADATA_MARKER = "{{WORKFLOW_METADATA}}"
 COLLECTED_RUNS_TABLE_MARKER = "{{COLLECTED_RUNS_TABLE}}"
-AUTOMATIC_STORAGE_CATALOG = "workflow_monitoring"
-AUTOMATIC_STORAGE_SCHEMA = "lakeflow_jobs"
 JOBS_API_RUN_STATE_TABLE = "workflow_run_api_state"
 JOBS_API_JOB_STATE_TABLE = "workflow_job_api_state"
 CUSTOM_VISUALIZATION_FILES = {
@@ -39,21 +38,11 @@ CUSTOM_VISUALIZATION_FILES = {
 
 
 @dataclass(frozen=True)
-class CollectorStorageConfiguration:
-    """Governed storage used by the Jobs API collector."""
-
-    catalog: str
-    schema: str
-    create_catalog_and_schema_if_missing: bool
-
-
-@dataclass(frozen=True)
 class DashboardGenerationConfiguration:
     """Validated values that are safe to place in dashboard SQL."""
 
     workspace_id: str
     active_workflows: tuple[ActiveWorkflow, ...]
-    collector_storage: CollectorStorageConfiguration
 
 
 def generate_dashboard(
@@ -76,10 +65,8 @@ def generate_dashboard(
         raise ValueError("dashboard scaffold contains no configured workflow marker")
 
     source_markers = {
-        WORKFLOW_METADATA_MARKER: _render_workflow_metadata_sql(configuration),
-        COLLECTED_RUNS_TABLE_MARKER: _qualified_collector_table(
-            configuration, JOBS_API_RUN_STATE_TABLE
-        ),
+        WORKFLOW_METADATA_MARKER: _render_workflow_metadata_sql(),
+        COLLECTED_RUNS_TABLE_MARKER: _qualified_collector_table(JOBS_API_RUN_STATE_TABLE),
     }
     for source_marker, source_sql in source_markers.items():
         source_replacement_count = _replace_text_marker(
@@ -183,10 +170,8 @@ def generate_collector_job_resource(generated_resource_path: Path) -> None:
     )
 
 
-def _render_workflow_metadata_sql(
-    configuration: DashboardGenerationConfiguration,
-) -> str:
-    job_state_table = _qualified_collector_table(configuration, JOBS_API_JOB_STATE_TABLE)
+def _render_workflow_metadata_sql() -> str:
+    job_state_table = _qualified_collector_table(JOBS_API_JOB_STATE_TABLE)
     return "\n".join(
         (
             "-- Join configured job IDs with Jobs API metadata and collection state.",
@@ -213,14 +198,8 @@ def _render_workflow_metadata_sql(
     )
 
 
-def _qualified_collector_table(
-    configuration: DashboardGenerationConfiguration,
-    table_name: str,
-) -> str:
-    return (
-        f"`{configuration.collector_storage.catalog}`."
-        f"`{configuration.collector_storage.schema}`.`{table_name}`"
-    )
+def _qualified_collector_table(table_name: str) -> str:
+    return table_name
 
 
 def _render_configured_workflows_sql(configuration: DashboardGenerationConfiguration) -> str:
@@ -246,8 +225,10 @@ def _render_configured_workflows_sql(configuration: DashboardGenerationConfigura
         job_id_sql = f"CAST('{workflow.job_id}' AS STRING)"
 
         first_deadline_date_sql = "CAST(NULL AS DATE)"
-        if workflow.sla.first_deadline_date:
-            first_deadline_date_sql = f"CAST('{workflow.sla.first_deadline_date}' AS DATE)"
+        if workflow.sla.first_deadline_date is not None:
+            first_deadline_date_sql = (
+                f"CAST('{workflow.sla.first_deadline_date.isoformat()}' AS DATE)"
+            )
 
         day_of_month_sql = "CAST(NULL AS INT)"
         if workflow.sla.day_of_month is not None:
@@ -323,7 +304,7 @@ def _escape_sql_string(sql_text: str) -> str:
     return sql_text.replace("'", "''")
 
 
-def _nullable_sql_string(optional_text: str) -> str:
+def _nullable_sql_string(optional_text: str | None) -> str:
     if not optional_text:
         return "CAST(NULL AS STRING)"
     return f"'{_escape_sql_string(optional_text)}'"
@@ -352,14 +333,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument(
         "--workspace-id",
         required=True,
+        type=validated_workspace_id,
         help="workspace ID used in generated dashboard SQL until #26",
-    )
-    generate_parser.add_argument("--catalog", default=AUTOMATIC_STORAGE_CATALOG)
-    generate_parser.add_argument("--catalog-schema", default=AUTOMATIC_STORAGE_SCHEMA)
-    generate_parser.add_argument(
-        "--create-catalog-and-schema-if-missing",
-        default="true",
-        choices=("true", "false"),
     )
     return parser
 
@@ -380,13 +355,6 @@ def main(command_arguments: list[str] | None = None) -> int:
         generation_configuration = DashboardGenerationConfiguration(
             workspace_id=parsed_arguments.workspace_id,
             active_workflows=configuration.active_workflows,
-            collector_storage=CollectorStorageConfiguration(
-                catalog=parsed_arguments.catalog,
-                schema=parsed_arguments.catalog_schema,
-                create_catalog_and_schema_if_missing=(
-                    parsed_arguments.create_catalog_and_schema_if_missing == "true"
-                ),
-            ),
         )
         generate_dashboard(
             generation_configuration,

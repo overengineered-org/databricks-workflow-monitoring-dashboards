@@ -10,10 +10,11 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -34,16 +35,16 @@ from src.collect_workflow_monitoring_jobs_api import (
     _prepare_collector_storage,
     _replace_workspace_sla_config,
     _stored_nonterminal_run_ids_for_reconciliation,
-    _validated_workspace_id,
 )
 from src.workflow_monitoring_config import (
     ActiveWorkflow,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
+    validated_workspace_id,
+    workflow_sla_config_rows,
 )
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
-    CollectorStorageConfiguration,
     DashboardGenerationConfiguration,
     _load_custom_visualization,
     generate_collector_job_resource,
@@ -62,11 +63,6 @@ JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_job
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
 LOCAL_VALIDATION_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/run-local-validation.sh"
 SQL_VALIDATION_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/validate-sql-datasets.sh"
-AUTOMATIC_COLLECTOR_STORAGE = CollectorStorageConfiguration(
-    catalog="workflow_monitoring",
-    schema="lakeflow_jobs",
-    create_catalog_and_schema_if_missing=True,
-)
 
 
 class ExpectedMissingRun(Exception):
@@ -114,7 +110,6 @@ class DashboardGenerationTests(unittest.TestCase):
                 "active workflow",
                 DashboardGenerationConfiguration(
                     workspace_id="123456789",
-                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
                         ActiveWorkflow(
                             job_id=42,
@@ -133,7 +128,6 @@ class DashboardGenerationTests(unittest.TestCase):
                 "fortnightly workflow",
                 DashboardGenerationConfiguration(
                     workspace_id="123456789",
-                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
                         ActiveWorkflow(
                             job_id=43,
@@ -141,7 +135,7 @@ class DashboardGenerationTests(unittest.TestCase):
                                 frequency="fortnightly",
                                 completion_time="06:00",
                                 timezone="UTC",
-                                first_deadline_date="2026-01-12",
+                                first_deadline_date=date(2026, 1, 12),
                             ),
                         ),
                     ),
@@ -152,7 +146,6 @@ class DashboardGenerationTests(unittest.TestCase):
                 "weekly workflow",
                 DashboardGenerationConfiguration(
                     workspace_id="123456789",
-                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(
                         ActiveWorkflow(
                             job_id=44,
@@ -171,7 +164,6 @@ class DashboardGenerationTests(unittest.TestCase):
                 "zero active workflows",
                 DashboardGenerationConfiguration(
                     workspace_id="123456789",
-                    collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
                     active_workflows=(),
                 ),
                 ("WHERE false", "CAST(NULL AS STRING) AS configured_job_id"),
@@ -220,7 +212,6 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -237,7 +228,6 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -340,7 +330,6 @@ class DashboardGenerationTests(unittest.TestCase):
         configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
             active_workflows=(),
-            collector_storage=AUTOMATIC_COLLECTOR_STORAGE,
         )
         expected_visualizations = {
             "sla-delivery-calendar": "sla-delivery-calendar.vega.json",
@@ -400,11 +389,6 @@ class DashboardGenerationTests(unittest.TestCase):
     def test_generation_uses_governed_tables_and_collector_job(self) -> None:
         workflow_monitoring_configuration = DashboardGenerationConfiguration(
             workspace_id="123456789",
-            collector_storage=CollectorStorageConfiguration(
-                catalog="monitoring_catalog",
-                schema="monitoring_schema",
-                create_catalog_and_schema_if_missing=False,
-            ),
             active_workflows=(
                 ActiveWorkflow(
                     job_id=42,
@@ -424,14 +408,9 @@ class DashboardGenerationTests(unittest.TestCase):
             generate_collector_job_resource(resource_path)
 
             dashboard_text = dashboard_path.read_text(encoding="utf-8")
-            self.assertIn(
-                "`monitoring_catalog`.`monitoring_schema`.`workflow_run_api_state`",
-                dashboard_text,
-            )
-            self.assertIn(
-                "`monitoring_catalog`.`monitoring_schema`.`workflow_job_api_state`",
-                dashboard_text,
-            )
+            self.assertIn("INNER JOIN workflow_run_api_state t", dashboard_text)
+            self.assertIn("FROM workflow_job_api_state", dashboard_text)
+            self.assertNotIn("monitoring_catalog", dashboard_text)
             self.assertIn("Jobs API collection failed", dashboard_text)
             self.assertIn("Jobs API data stale", dashboard_text)
             self.assertIn("c.configured_job_id AS job_id", dashboard_text)
@@ -558,6 +537,30 @@ class DashboardCommandTests(unittest.TestCase):
             )
             self.assertTrue(dashboard_output_path.is_file())
             self.assertTrue(collector_resource_output_path.is_file())
+
+    def test_generate_rejects_invalid_workspace_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
+            configuration_path.write_text(
+                "version: 3\ndefault_timezone: UTC\nworkflows: []\n",
+                encoding="utf-8",
+            )
+            command_stderr = StringIO()
+            with redirect_stderr(command_stderr), self.assertRaises(SystemExit) as raised_exit:
+                dashboard_main(
+                    [
+                        "generate",
+                        "--config",
+                        str(configuration_path),
+                        "--schema",
+                        str(SCHEMA_PATH),
+                        "--workspace-id",
+                        "12 34",
+                    ]
+                )
+
+        self.assertEqual(raised_exit.exception.code, 2)
+        self.assertIn("invalid validated_workspace_id value: '12 34'", command_stderr.getvalue())
 
     def test_command_reports_configuration_read_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -847,12 +850,25 @@ class JobsApiCollectorTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.write = RecordingConfigWriter()
 
+        class StoredConfigTable:
+            schema = "stored schema"
+
+            def __init__(self, rows: list[SimpleNamespace]) -> None:
+                self.rows = rows
+
+            def where(self, predicate: str) -> StoredConfigTable:
+                recorded_write["where"] = predicate
+                return self
+
+            def collect(self) -> list[SimpleNamespace]:
+                return self.rows
+
         def create_data_frame(rows: list[dict[str, Any]], schema: Any) -> RecordingConfigDataFrame:
             recorded_write["rows"] = rows
             recorded_write["schema"] = schema
             return RecordingConfigDataFrame()
 
-        loaded_at = datetime(2026, 10, 29, 1, 2, 3)
+        changed_at = datetime(2026, 10, 29, 1, 2, 3)
         configuration = WorkflowMonitoringConfiguration(
             active_workflows=(
                 ActiveWorkflow(
@@ -865,22 +881,137 @@ class JobsApiCollectorTests(unittest.TestCase):
                 ),
             )
         )
-        with patch.object(collector, "_sla_config_schema", return_value="schema"):
-            _replace_workspace_sla_config(
-                SimpleNamespace(createDataFrame=create_data_frame),
-                "monitoring",
-                "jobs",
-                "111",
-                configuration,
-                loaded_at,
-            )
+        spark_session = SimpleNamespace(
+            createDataFrame=create_data_frame,
+            table=lambda _table_name: StoredConfigTable([]),
+        )
+        _replace_workspace_sla_config(
+            spark_session,
+            "monitoring",
+            "jobs",
+            "111",
+            configuration,
+            changed_at,
+        )
 
+        self.assertEqual(recorded_write["where"], "workspace_id = '111'")
         self.assertEqual(recorded_write["format"], "delta")
         self.assertEqual(recorded_write["mode"], "overwrite")
         self.assertEqual(recorded_write["replaceWhere"], "workspace_id = '111'")
         self.assertEqual(recorded_write["table"], "`monitoring`.`jobs`.`workflow_sla_config`")
+        self.assertEqual(recorded_write["schema"], "stored schema")
         self.assertEqual(recorded_write["rows"][0]["configured_job_id"], "42")
-        self.assertEqual(recorded_write["rows"][0]["config_loaded_at"], loaded_at)
+        self.assertEqual(recorded_write["rows"][0]["config_changed_at"], changed_at)
+
+    def test_sla_config_write_is_skipped_when_rows_do_not_change(self) -> None:
+        changed_at = datetime(2026, 10, 29, 1, 2, 3)
+        configuration = WorkflowMonitoringConfiguration(
+            active_workflows=(
+                ActiveWorkflow(
+                    job_id=42,
+                    sla=ServiceLevelAgreement(
+                        frequency="daily",
+                        completion_time="06:00",
+                        timezone="UTC",
+                    ),
+                ),
+            )
+        )
+        stored_rows = [
+            SimpleNamespace(
+                asDict=lambda: {
+                    **workflow_sla_config_rows(configuration, "111", changed_at)[0],
+                    "config_changed_at": datetime(2026, 10, 29, 0, 0, 0),
+                }
+            )
+        ]
+
+        class StoredConfigTable:
+            schema = "stored schema"
+
+            def where(self, _predicate: str) -> StoredConfigTable:
+                return self
+
+            def collect(self) -> list[SimpleNamespace]:
+                return stored_rows
+
+        create_data_frame = Mock()
+        spark_session = SimpleNamespace(
+            createDataFrame=create_data_frame,
+            table=lambda _table_name: StoredConfigTable(),
+        )
+
+        _replace_workspace_sla_config(
+            spark_session,
+            "monitoring",
+            "jobs",
+            "111",
+            configuration,
+            changed_at,
+        )
+
+        create_data_frame.assert_not_called()
+
+    def test_sla_config_row_keys_match_the_ddl_columns(self) -> None:
+        class RecordingSparkSession:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def sql(self, statement: str) -> None:
+                self.statements.append(statement)
+
+        spark_session = RecordingSparkSession()
+        _prepare_collector_storage(
+            spark_session,
+            "workflow_monitoring",
+            "lakeflow_jobs",
+            True,
+        )
+        sla_ddl = next(
+            statement
+            for statement in spark_session.statements
+            if "workflow_sla_config" in statement
+        )
+        ddl_columns = re.findall(
+            r"^\s+([a-z_]+) (?:STRING|INT|DATE|TIMESTAMP)", sla_ddl, re.MULTILINE
+        )
+        configuration = WorkflowMonitoringConfiguration(
+            active_workflows=(
+                ActiveWorkflow(
+                    job_id=42,
+                    sla=ServiceLevelAgreement(
+                        frequency="daily",
+                        completion_time="06:00",
+                        timezone="UTC",
+                    ),
+                ),
+            )
+        )
+        row = workflow_sla_config_rows(
+            configuration,
+            "111",
+            datetime(2026, 10, 29, 1, 2, 3),
+        )[0]
+
+        self.assertEqual(list(row), ddl_columns)
+
+    def test_generated_environment_pins_match_uv_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            resource_path = Path(temporary_directory) / "collector.yml"
+            generate_collector_job_resource(resource_path)
+            collector_job = yaml.safe_load(resource_path.read_text(encoding="utf-8"))["resources"][
+                "jobs"
+            ]["workflow_monitoring_jobs_api_collector"]
+
+        dependencies = collector_job["environments"][0]["spec"]["dependencies"]
+        with (REPOSITORY_ROOT / "uv.lock").open("rb") as lock_file:
+            lock_document = tomllib.load(lock_file)
+        locked_versions = {
+            package["name"]: package["version"] for package in lock_document["package"]
+        }
+        for dependency in dependencies:
+            dependency_name, dependency_version = dependency.split("==")
+            self.assertEqual(dependency_version, locked_versions[dependency_name])
 
     def test_invalid_configuration_writes_nothing(self) -> None:
         with (
@@ -915,10 +1046,60 @@ class JobsApiCollectorTests(unittest.TestCase):
         prepare_storage.assert_not_called()
         replace_config.assert_not_called()
 
+    def test_empty_configuration_returns_before_jobs_api_work(self) -> None:
+        sdk_module = ModuleType("databricks.sdk")
+        sdk_module.WorkspaceClient = lambda: SimpleNamespace(get_workspace_id=lambda: 111)
+        databricks_module = ModuleType("databricks")
+        databricks_module.__path__ = []
+        empty_configuration = WorkflowMonitoringConfiguration(active_workflows=())
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "databricks": databricks_module,
+                    "databricks.sdk": sdk_module,
+                },
+            ),
+            patch.object(
+                collector,
+                "load_workflow_monitoring_configuration",
+                return_value=empty_configuration,
+            ),
+            patch.object(collector, "_spark_session"),
+            patch.object(collector, "_prepare_collector_storage"),
+            patch.object(collector, "_replace_workspace_sla_config") as replace_config,
+            patch.object(collector, "_delete_expired_run_state") as delete_expired_state,
+            patch.object(
+                collector,
+                "_last_successful_collection_by_workspace_and_job",
+            ) as last_successful_collection,
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "collector",
+                    "--config-path",
+                    "workflow-monitoring.yml",
+                    "--catalog",
+                    "monitoring",
+                    "--schema",
+                    "jobs",
+                    "--create-catalog-and-schema-if-missing",
+                    "false",
+                ],
+            ),
+        ):
+            collector.main()
+
+        replace_config.assert_called_once()
+        delete_expired_state.assert_not_called()
+        last_successful_collection.assert_not_called()
+
     def test_runtime_workspace_and_retention_are_scoped(self) -> None:
-        self.assertEqual(_validated_workspace_id("111"), "111")
+        self.assertEqual(validated_workspace_id("111"), "111")
         with self.assertRaisesRegex(ValueError, "must contain only digits"):
-            _validated_workspace_id("workspace-name")
+            validated_workspace_id("workspace-name")
 
         recorded_statements: list[str] = []
         spark_session = SimpleNamespace(sql=recorded_statements.append)

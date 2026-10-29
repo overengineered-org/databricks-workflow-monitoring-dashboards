@@ -102,11 +102,10 @@ Replace the tracked fake configuration and add your first Job:
 ```
 
 The collector reads this file on every run and replaces the active workflow rows in
-`workflow_sla_config`. The default bundle variables create
-`workflow_monitoring.lakeflow_jobs` when the collector first runs. To use an existing catalog and
-schema, set the `catalog` and `schema` bundle variables on generate, validate, and deploy.
-Bring-your-own storage never creates the catalog or schema. Both modes create the three collector
-tables when missing.
+`workflow_sla_config`. To use an existing catalog and schema, set the `catalog` and `schema`
+bundle variables. Keep `create_catalog_and_schema_if_missing` set to `false` so the collector
+never runs `CREATE CATALOG` or `CREATE SCHEMA`. Both modes create the three collector tables when
+missing.
 
 ### 4. Generate and validate
 
@@ -119,9 +118,6 @@ databricks bundle validate --strict -t dev --profile <profile> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-Pass `--catalog <catalog>` and `--catalog-schema <schema>` to `generate` when they differ from
-the default bundle variables. Use the same values with `--var` on bundle commands.
-
 Review the generated dashboard and collector Job before deployment. Do not edit generated files
 directly. Change `workflow-monitoring.yml` or the dashboard scaffold, then generate again.
 
@@ -129,9 +125,14 @@ directly. Change `workflow-monitoring.yml` or the dashboard scaffold, then gener
 
 These commands create workspace resources and run serverless compute:
 
+For the first deploy, pass `--var="create_catalog_and_schema_if_missing=true"` so the collector
+can create the default catalog and schema. Leave it set to `false` when you bring your own
+catalog and schema.
+
 ```sh
 databricks bundle deploy -t dev --profile <profile> \
-  --var="warehouse_id=<warehouse-id>"
+  --var="warehouse_id=<warehouse-id>" \
+  --var="create_catalog_and_schema_if_missing=true"
 
 databricks bundle run workflow_monitoring_jobs_api_collector \
   -t dev --profile <profile> \
