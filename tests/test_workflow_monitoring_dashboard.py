@@ -424,7 +424,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "workflow_monitoring_jobs_api_collector"
             ]
             self.assertEqual(collector_job["schedule"]["quartz_cron_expression"], "0 0/5 * * * ?")
-            self.assertEqual(collector_job["schedule"]["pause_status"], "UNPAUSED")
+            self.assertNotIn("pause_status", collector_job["schedule"])
             self.assertEqual(collector_job["max_concurrent_runs"], 1)
             self.assertNotIn("queue", collector_job)
             self.assertEqual(
@@ -451,6 +451,8 @@ class DashboardGenerationTests(unittest.TestCase):
                 [
                     "--config-path",
                     "${workspace.file_path}/workflow-monitoring.yml",
+                    "--schema-path",
+                    "${workspace.file_path}/src/workflow-monitoring.schema.json",
                     "--catalog",
                     "${var.catalog}",
                     "--schema",
@@ -472,7 +474,7 @@ class DashboardGenerationTests(unittest.TestCase):
             collector_job = yaml.safe_load(resource_path.read_text(encoding="utf-8"))["resources"][
                 "jobs"
             ]["workflow_monitoring_jobs_api_collector"]
-            self.assertEqual(collector_job["schedule"]["pause_status"], "UNPAUSED")
+            self.assertNotIn("pause_status", collector_job["schedule"])
 
 
 class DashboardCommandTests(unittest.TestCase):
@@ -799,6 +801,14 @@ class JobsApiCollectorTests(unittest.TestCase):
         first_line = JOBS_API_COLLECTOR_PATH.read_text(encoding="utf-8").splitlines()[0]
         self.assertNotEqual(first_line, "# Databricks notebook source")
 
+    def test_source_files_do_not_look_up_file_paths(self) -> None:
+        for source_path in (REPOSITORY_ROOT / "src").rglob("*.py"):
+            with self.subTest(source_path=source_path):
+                self.assertNotIn(
+                    "__file__",
+                    source_path.read_text(encoding="utf-8"),
+                )
+
     def test_storage_creation_respects_selected_mode(self) -> None:
         class RecordingSparkSession:
             def __init__(self) -> None:
@@ -1035,6 +1045,8 @@ class JobsApiCollectorTests(unittest.TestCase):
                     "collector",
                     "--config-path",
                     "workflow-monitoring.yml",
+                    "--schema-path",
+                    "src/workflow-monitoring.schema.json",
                     "--catalog",
                     "monitoring",
                     "--schema",
@@ -1086,6 +1098,8 @@ class JobsApiCollectorTests(unittest.TestCase):
                     "collector",
                     "--config-path",
                     "workflow-monitoring.yml",
+                    "--schema-path",
+                    "src/workflow-monitoring.schema.json",
                     "--catalog",
                     "monitoring",
                     "--schema",
@@ -1521,6 +1535,8 @@ class JobsApiCollectorTests(unittest.TestCase):
                     "collector",
                     "--config-path",
                     "workflow-monitoring.yml",
+                    "--schema-path",
+                    "src/workflow-monitoring.schema.json",
                     "--catalog",
                     "monitoring",
                     "--schema",
@@ -1864,6 +1880,11 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(
             bundle_configuration["bundle"]["databricks_cli_version"],
             ">= 1.13.0",
+        )
+        self.assertNotIn("presets", bundle_configuration["targets"]["dev"])
+        self.assertEqual(
+            bundle_configuration["targets"]["prod"]["presets"]["trigger_pause_status"],
+            "UNPAUSED",
         )
 
         act_dockerfile = (REPOSITORY_ROOT / ".act/Dockerfile").read_text(encoding="utf-8")

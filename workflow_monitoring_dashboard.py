@@ -113,7 +113,6 @@ def generate_collector_job_resource(generated_resource_path: Path) -> None:
                     "schedule": {
                         "quartz_cron_expression": "0 0/5 * * * ?",
                         "timezone_id": "UTC",
-                        "pause_status": "UNPAUSED",
                     },
                     "environments": [
                         {
@@ -136,6 +135,8 @@ def generate_collector_job_resource(generated_resource_path: Path) -> None:
                                 "parameters": [
                                     "--config-path",
                                     "${workspace.file_path}/workflow-monitoring.yml",
+                                    "--schema-path",
+                                    "${workspace.file_path}/src/workflow-monitoring.schema.json",
                                     "--catalog",
                                     "${var.catalog}",
                                     "--schema",

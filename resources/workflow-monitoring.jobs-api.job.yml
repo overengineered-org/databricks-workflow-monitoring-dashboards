@@ -9,7 +9,6 @@ resources:
       schedule:
         quartz_cron_expression: 0 0/5 * * * ?
         timezone_id: UTC
-        pause_status: UNPAUSED
       environments:
       - environment_key: workflow_monitoring_collector
         spec:
@@ -25,6 +24,8 @@ resources:
           parameters:
           - --config-path
           - ${workspace.file_path}/workflow-monitoring.yml
+          - --schema-path
+          - ${workspace.file_path}/src/workflow-monitoring.schema.json
           - --catalog
           - ${var.catalog}
           - --schema

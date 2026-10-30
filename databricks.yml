@@ -36,5 +36,7 @@ targets:
   # Production uses one stable path for each user, bundle, and target.
   prod:
     mode: production
+    presets:
+      trigger_pause_status: UNPAUSED
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

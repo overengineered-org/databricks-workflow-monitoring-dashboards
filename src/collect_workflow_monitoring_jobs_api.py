@@ -28,7 +28,6 @@ except ImportError:  # The spark_python_task runs this file directly from src/.
 RUN_STATE_TABLE_NAME = "workflow_run_api_state"
 JOB_STATE_TABLE_NAME = "workflow_job_api_state"
 SLA_CONFIG_TABLE_NAME = "workflow_sla_config"
-CONFIGURATION_SCHEMA_PATH = Path(__file__).with_name("workflow-monitoring.schema.json")
 RUN_HISTORY_RETENTION_DAYS = 60
 INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15
 RUN_STATE_WRITE_BATCH_SIZE = 500
@@ -462,6 +461,7 @@ def _delete_unretrievable_run_state(
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Collect Lakeflow Jobs API state.")
     parser.add_argument("--config-path", type=Path, required=True)
+    parser.add_argument("--schema-path", type=Path, required=True)
     parser.add_argument("--catalog", required=True)
     parser.add_argument("--schema", required=True)
     parser.add_argument(
@@ -482,7 +482,7 @@ def main() -> None:
     command_arguments = _build_argument_parser().parse_args()
     configuration = load_workflow_monitoring_configuration(
         command_arguments.config_path,
-        CONFIGURATION_SCHEMA_PATH,
+        command_arguments.schema_path,
     )
     from databricks.sdk import WorkspaceClient  # type: ignore[import-not-found]
 
