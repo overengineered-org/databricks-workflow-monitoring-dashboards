@@ -12,7 +12,7 @@ command = "uv sync --locked"
 [[actions]]
 name = "Smoke checks"
 icon = "tool"
-command = "uv run ruff format --check . && uv run ruff check . && uv run python -m unittest discover -s tests -v && go test ./... && uv run python workflow_monitoring_dashboard.py validate"
+command = "uv run ruff format --check . && uv run ruff check . && uv run python -m unittest discover -s tests -v && uv run python workflow_monitoring_dashboard.py validate"
 
 [[actions]]
 name = "Full local gate"

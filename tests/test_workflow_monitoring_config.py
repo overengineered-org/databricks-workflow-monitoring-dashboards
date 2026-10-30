@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import textwrap
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 from src.workflow_monitoring_config import (
     CONFIGURATION_VERSION_2_MESSAGE,
@@ -114,7 +117,7 @@ class ConfigurationTests(unittest.TestCase):
                       day_of_week: monday
                 """,
                 None,
-                "daily SLA only accepts",
+                r"should not be valid under \{'required': \['day_of_week'\]\}",
             ),
             (
                 "invalid timezone",
@@ -254,9 +257,16 @@ class ConfigurationTests(unittest.TestCase):
             _load_configuration_yaml(configuration_yaml)
 
         error_message = str(raised_error.exception)
-        self.assertIn("workflow monitoring configuration is invalid:", error_message)
-        self.assertIn("workflows[0].sla: daily SLA only accepts", error_message)
-        self.assertIn("workflows[1].sla: weekly SLA requires", error_message)
+        self.assertIn("workflow monitoring configuration does not match schema:", error_message)
+        self.assertIn(
+            "workflows[0].sla: {'frequency': 'daily', 'completion_time': '06:00', "
+            "'day_of_week': 'monday'} should not be valid under {'required': ['day_of_week']}",
+            error_message,
+        )
+        self.assertIn(
+            "workflows[1].sla: 'day_of_week' is a required property",
+            error_message,
+        )
 
     def test_only_active_workflows_become_table_rows(self) -> None:
         configuration_yaml = """
@@ -337,3 +347,99 @@ class ConfigurationTests(unittest.TestCase):
         )
 
         self.assertEqual(rows[0]["first_deadline_date"], date(2026, 1, 12))
+
+
+class SchemaScheduleRuleTests(unittest.TestCase):
+    """Each frequency rule must be enforced by the JSON Schema alone, for the editor."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        schema_document = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        cls.validator = Draft202012Validator(schema_document)
+
+    def _sla_errors(self, schedule_document: dict) -> list:
+        document = {
+            "version": 3,
+            "default_timezone": "UTC",
+            "workflows": [
+                {
+                    "job_id": 1,
+                    "monitoring_status": "active",
+                    "sla": schedule_document,
+                }
+            ],
+        }
+        return list(self.validator.iter_errors(document))
+
+    def _assert_forbidden(self, base_schedule: dict, field: str) -> None:
+        field_values = {
+            "day_of_week": "monday",
+            "first_deadline_date": "2026-01-12",
+            "day_of_month": 3,
+        }
+        errors = self._sla_errors({**base_schedule, field: field_values[field]})
+        expected_message = f"should not be valid under {{'required': ['{field}']}}"
+        self.assertTrue(
+            any(expected_message in error.message for error in errors),
+            f"forbidden field {field} was accepted: {errors}",
+        )
+
+    def _assert_missing_required(self, base_schedule: dict, field: str) -> None:
+        errors = self._sla_errors(base_schedule)
+        expected_message = f"'{field}' is a required property"
+        self.assertTrue(
+            any(error.message == expected_message for error in errors),
+            f"missing field {field} was accepted: {errors}",
+        )
+
+    def test_daily_schema_rule(self) -> None:
+        base_schedule = {"frequency": "daily", "completion_time": "06:00"}
+        with self.subTest(case="correct document passes"):
+            self.assertEqual(self._sla_errors(base_schedule), [])
+        for forbidden_field in ("day_of_week", "first_deadline_date", "day_of_month"):
+            with self.subTest(case=f"forbidden {forbidden_field}"):
+                self._assert_forbidden(base_schedule, forbidden_field)
+
+    def test_weekly_schema_rule(self) -> None:
+        base_schedule = {
+            "frequency": "weekly",
+            "completion_time": "06:00",
+            "day_of_week": "monday",
+        }
+        with self.subTest(case="correct document passes"):
+            self.assertEqual(self._sla_errors(base_schedule), [])
+        with self.subTest(case="missing day_of_week"):
+            self._assert_missing_required(
+                {"frequency": "weekly", "completion_time": "06:00"}, "day_of_week"
+            )
+        for forbidden_field in ("first_deadline_date", "day_of_month"):
+            with self.subTest(case=f"forbidden {forbidden_field}"):
+                self._assert_forbidden(base_schedule, forbidden_field)
+
+    def test_fortnightly_schema_rule(self) -> None:
+        base_schedule = {
+            "frequency": "fortnightly",
+            "completion_time": "06:00",
+            "first_deadline_date": "2026-01-12",
+        }
+        with self.subTest(case="correct document passes"):
+            self.assertEqual(self._sla_errors(base_schedule), [])
+        with self.subTest(case="missing first_deadline_date"):
+            self._assert_missing_required(
+                {"frequency": "fortnightly", "completion_time": "06:00"}, "first_deadline_date"
+            )
+        for forbidden_field in ("day_of_week", "day_of_month"):
+            with self.subTest(case=f"forbidden {forbidden_field}"):
+                self._assert_forbidden(base_schedule, forbidden_field)
+
+    def test_monthly_schema_rule(self) -> None:
+        base_schedule = {"frequency": "monthly", "completion_time": "06:00", "day_of_month": 3}
+        with self.subTest(case="correct document passes"):
+            self.assertEqual(self._sla_errors(base_schedule), [])
+        with self.subTest(case="missing day_of_month"):
+            self._assert_missing_required(
+                {"frequency": "monthly", "completion_time": "06:00"}, "day_of_month"
+            )
+        for forbidden_field in ("day_of_week", "first_deadline_date"):
+            with self.subTest(case=f"forbidden {forbidden_field}"):
+                self._assert_forbidden(base_schedule, forbidden_field)

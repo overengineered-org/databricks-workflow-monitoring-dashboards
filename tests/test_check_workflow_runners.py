@@ -118,18 +118,9 @@ class RepositoryWorkflowTests(unittest.TestCase):
         dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
 
         uv_version = _step_with_prefix(jobs, "astral-sh/setup-uv")["with"]["version"]
-        go_version = _step_with_prefix(jobs, "actions/setup-go")["with"]["go-version"]
-        golangci_version = _step_with_prefix(jobs, "golangci/golangci-lint-action")["with"][
-            "version"
-        ]
         databricks_version = _step_with_prefix(jobs, "databricks/setup-cli")["with"]["version"]
 
         self.assertEqual(uv_version, _dockerfile_value(dockerfile, r"astral-sh/uv:([0-9.]+)"))
-        self.assertEqual(go_version, _dockerfile_value(dockerfile, r"golang:([0-9.]+)-bookworm"))
-        self.assertEqual(
-            golangci_version,
-            _dockerfile_value(dockerfile, r"golangci/golangci-lint:(v[0-9.]+)"),
-        )
         self.assertEqual(
             databricks_version,
             _dockerfile_value(dockerfile, r"databricks/setup-cli/v([0-9.]+)/install\.sh"),

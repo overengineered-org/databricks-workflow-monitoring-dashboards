@@ -25,10 +25,10 @@ The Codex project environment is defined in `.codex/environments/environment.tom
 `uv sync --locked` when Codex creates a worktree and exposes Bootstrap, Smoke checks, and Full
 local gate actions. The full gate uses the same wrapper as section 3.
 
-The local checks need the Python and `uv` versions in [README step 1](README.md#1-create-the-project)
-and Go 1.25 or newer. The required local Act gate also needs Git, `act`, and a running Docker
+The local checks need the Python and `uv` versions in [README step 1](README.md#1-create-the-project).
+The required local Act gate also needs Git, `act`, and a running Docker
 daemon. Start Docker Desktop on macOS or the Docker daemon on Linux before running the gate.
-The Act image supplies `golangci-lint`, `jq`, and the pinned Databricks CLI; they are not host
+The Act image supplies `jq` and the pinned Databricks CLI; they are not host
 setup requirements for this gate.
 
 From the repository root, prepare the ignored Python environment and check the other local
@@ -36,7 +36,6 @@ prerequisites:
 
 ```sh
 uv sync --locked
-go version
 act --version
 docker info >/dev/null
 ```
@@ -61,7 +60,6 @@ warehouse IDs, or organization-specific Job details.
 | Change | Owning source |
 | --- | --- |
 | Public YAML format | `src/workflow-monitoring.schema.json` |
-| Configuration CLI | `cmd/workflow-monitoring/` |
 | Dashboard build | `scripts/build_dashboard.py` |
 | Jobs API collector | `src/collect_workflow_monitoring_jobs_api.py` |
 | Collector Job | `template/template/{{.project_name}}/resources/workflow-monitoring.collector.job.yml.tmpl` |
@@ -104,7 +102,6 @@ uv run ruff format --check .
 uv run ruff check .
 uv run python -m unittest discover -s tests -v
 uv run python scripts/build_template.py --check
-go test ./...
 ```
 
 Before opening a pull request, run the required local gate:
