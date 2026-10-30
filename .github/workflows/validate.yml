@@ -93,6 +93,9 @@ jobs:
           uv run python scripts/build_dashboard.py
       - name: Check built dashboard
         run: cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json
+      - name: Check built template
+        # The template product copy must be current, so adopters get the reviewed files.
+        run: uv run python scripts/build_template.py --check
       - name: Validate dashboard JSON
         run: jq empty src/dashboards/workflow-monitoring.lvdash.json
       - name: Check banned em dash
