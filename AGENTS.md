@@ -64,28 +64,44 @@ The maintainer tests on Databricks Free Edition. Never do anything that can cost
 - Never use a paid workspace for testing.
 - Report each skipped live check as not run, with the reason.
 
-## Pipelines: local act only
+## Pipelines
 
-This repository must not run pipelines on GitHub.
+GitHub runs `.github/workflows/validate.yml` for each pull request and each push to `main`.
+`scripts/run-local-validation.sh` runs the same file locally with `act`.
 
-- Never create or modify `.github/workflows/`.
-- Never configure or run GitHub Actions.
-- Store local workflow definitions under `.act/workflows/`.
-- Run the repository-specific local gate through its wrapper:
+Cost guardrails are rules:
 
-  ```sh
-  scripts/run-local-validation.sh
-  ```
+- Every job uses exactly `runs-on: ubuntu-latest`. Never use a larger runner, a runner group,
+  labels, macOS, Windows, a GPU runner, or a self-hosted runner.
+- Every job sets `timeout-minutes: 15` and `permissions: contents: read`.
+- Use `concurrency` with `cancel-in-progress: true`.
+- Never use secrets or `pull_request_target`.
+- Never upload artifacts.
+- Use no paid Marketplace actions and no third-party services.
+- Pin every `uses:` line to a full commit SHA, with the version in a comment.
+- Guard each tool install step with `if: ${{ !env.ACT }}`, so local `act` runs keep the fixed
+  image.
+- `runner-guard` is the first job in each workflow. Every other job has `needs: runner-guard`.
+- Keep `.github/workflows/runner-guard.yml` and the `runner-guard` job in `validate.yml`.
+
+Run the repository-specific local gate through its wrapper:
+
+```sh
+scripts/run-local-validation.sh
+```
 
 - The wrapper selects the host architecture and rebuilds the fixed image.
 - It reuses the labelled Act container while its image and checkout are current.
 - It removes only dangling images.
 - Do not bypass the wrapper for the standard local gate.
-- Never use GitHub larger runners. They are billed even in public repositories. Any GitHub
-  workflow uses standard GitHub-hosted runners (`ubuntu-latest`) only.
 
-If Docker, `act`, or the local image is unavailable, repair the local gate. Do not substitute
-GitHub Actions. Preserve the wrapper command and outcome as evidence.
+If Docker, `act`, or the local image is unavailable, repair the local gate and record it as not
+run. Preserve the wrapper command and outcome as evidence.
+
+Live Databricks checks run locally only:
+
+- Never run live Databricks checks on GitHub.
+- Keep `.act/workflows/databricks-validate.yml` local.
 
 ## Change quality
 

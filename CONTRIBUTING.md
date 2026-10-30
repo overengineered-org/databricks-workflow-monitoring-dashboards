@@ -106,7 +106,7 @@ scripts/run-local-validation.sh
 ```
 
 The wrapper uses the repository's fixed Act image and retained checkout-scoped container.
-GitHub-hosted Actions are disabled.
+The `validate` check must pass on each pull request.
 
 Live Databricks validation is optional unless a maintainer requests it. Every live command must
 use the selected profile as `--profile <name>`.

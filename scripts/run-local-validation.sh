@@ -59,7 +59,7 @@ act --container-architecture "$runner_platform" \
   --pull=false \
   --container-options "$runner_container_options" \
   -P "ubuntu-latest=$runner_image" \
-  -W .act/workflows/validate.yml || validation_exit_code=$?
+  -W .github/workflows/validate.yml || validation_exit_code=$?
 
 docker image prune --force --filter dangling=true
 exit "$validation_exit_code"

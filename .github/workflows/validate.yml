@@ -1,19 +1,65 @@
-name: Local validation
+name: Validation
 
-# This file is run by local act only. GitHub Actions is disabled for this repo.
+# GitHub runs this gate for pull requests and pushes to main. GitHub-hosted
+# runners are free for public repositories. scripts/run-local-validation.sh runs
+# the same file with act.
+#
+# Cost guardrails: every job uses exactly ubuntu-latest. Never use a
+# non-standard runner, a runner group, labels, or a self-hosted runner. Never
+# add repository secrets, target pull request triggers, artifact uploads, or
+# paid actions.
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  validate:
+  runner-guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check workflow runners
+        run: python3 scripts/check_workflow_runners.py
+
+  validate:
+    needs: runner-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       GOCACHE: /tmp/workflow-monitoring-act-go-cache
       GOMODCACHE: /tmp/workflow-monitoring-act-go-mod-cache
       UV_CACHE_DIR: /tmp/workflow-monitoring-act-uv-cache
       UV_PROJECT_ENVIRONMENT: /tmp/workflow-monitoring-act-venv
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install uv
+        if: ${{ !env.ACT }}
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.12.2"
+      - name: Install Go
+        if: ${{ !env.ACT }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.6"
+      - name: Install golangci-lint
+        if: ${{ !env.ACT }}
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          install-only: true
+      - name: Install Databricks CLI
+        if: ${{ !env.ACT }}
+        uses: databricks/setup-cli@6bb7075f85b326f8b9ce160933dfe9bcd63c8121 # v1.13.0
+        with:
+          version: "1.13.0"
       - name: Verify committed Python lockfile
         run: uv lock --check
       - name: Install committed Python environment

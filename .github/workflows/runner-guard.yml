@@ -1,0 +1,29 @@
+name: Runner guard
+
+# This check runs on pull requests and pushes to main. It scans every workflow
+# file so a billed runner cannot enter the repository. Branch protection
+# requires this check.
+#
+# Cost guardrails: the job uses exactly ubuntu-latest. Never use a
+# non-standard runner, a runner group, labels, or a self-hosted runner. Never
+# add repository secrets, target pull request triggers, artifact uploads, or
+# paid actions.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: runner-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check workflow runners
+        run: python3 scripts/check_workflow_runners.py
