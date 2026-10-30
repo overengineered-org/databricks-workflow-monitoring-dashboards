@@ -41,11 +41,13 @@ You need:
 
 ```sh
 databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
-  --tag v0.1.3 \
+  --tag v0.2.0 \
   --template-dir template \
   --output-dir .
 cd workflow_monitoring
 ```
+
+v0.2.0 is the first release with the template.
 
 The command creates a project folder named by the `project_name` prompt. The default is
 `workflow_monitoring`. Change the `cd` command if you choose another name.

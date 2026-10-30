@@ -48,7 +48,7 @@ class ReleaseTargetTests(unittest.TestCase):
 
 
 class RepositoryLauncherTests(unittest.TestCase):
-    PROJECT_VERSION = "0.1.3"
+    PROJECT_VERSION = launcher_module.read_project_version(REPOSITORY_ROOT)
     RELEASE_TARGETS = (
         launcher_module.ReleaseTarget("linux", "amd64", "tar.gz", "workflow-monitoring"),
         launcher_module.ReleaseTarget("windows", "amd64", "zip", "workflow-monitoring.exe"),
