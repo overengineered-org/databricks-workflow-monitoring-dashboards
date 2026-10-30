@@ -1,4 +1,4 @@
-name: Validation
+name: Local validation
 
 # GitHub runs this gate for pull requests and pushes to main. GitHub-hosted
 # runners are free for public repositories. scripts/run-local-validation.sh runs
