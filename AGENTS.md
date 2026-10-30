@@ -80,6 +80,8 @@ This repository must not run pipelines on GitHub.
 - It reuses the labelled Act container while its image and checkout are current.
 - It removes only dangling images.
 - Do not bypass the wrapper for the standard local gate.
+- Never use GitHub larger runners. They are billed even in public repositories. Any GitHub
+  workflow uses standard GitHub-hosted runners (`ubuntu-latest`) only.
 
 If Docker, `act`, or the local image is unavailable, repair the local gate. Do not substitute
 GitHub Actions. Preserve the wrapper command and outcome as evidence.
@@ -91,6 +93,18 @@ GitHub Actions. Preserve the wrapper command and outcome as evidence.
 - Do not add compatibility layers or unfinished stopgaps.
 - Keep names intention-revealing and domain-specific.
 - Fix all issues found during the session, while keeping unrelated scope explicit.
+
+## Scope discipline
+
+Change only what the issue or the prompt asks for.
+
+- Do not rename or move a name that deployed resources or users depend on, unless the request
+  says so. This includes bundle resource keys, Job task keys, Job and dashboard names, table and
+  column names, CLI flags, config fields, and file paths that resources reference.
+- If a rename or a refactor looks useful, propose it in the pull request body. Do not do it.
+- In the pull request body, list every change that the request did not name, with its reason.
+  Write "None" when there are none.
+- When a change touches `databricks.yml` or `resources/`, list the deployed fields that change.
 
 ## Review and simplification
 
