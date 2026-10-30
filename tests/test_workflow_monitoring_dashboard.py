@@ -13,9 +13,8 @@ import textwrap
 import tomllib
 import unittest
 from collections.abc import Iterator
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
-from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -23,6 +22,11 @@ from unittest.mock import Mock, patch
 
 import yaml
 
+from scripts.build_dashboard import (
+    CUSTOM_VISUALIZATION_FILES,
+    _load_custom_visualization,
+    build_dashboard,
+)
 from src import collect_workflow_monitoring_jobs_api as collector
 from src.collect_workflow_monitoring_jobs_api import (
     RUN_STATE_WRITE_BATCH_SIZE,
@@ -40,23 +44,17 @@ from src.workflow_monitoring_config import (
     ActiveWorkflow,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
+    load_workflow_monitoring_configuration,
     validated_workspace_id,
     workflow_sla_config_rows,
-)
-from workflow_monitoring_dashboard import (
-    CUSTOM_VISUALIZATION_FILES,
-    _load_custom_visualization,
-    generate_collector_job_resource,
-    generate_dashboard,
-)
-from workflow_monitoring_dashboard import (
-    main as dashboard_main,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPOSITORY_ROOT / "src/workflow-monitoring.schema.json"
+TRACKED_CONFIGURATION_PATH = REPOSITORY_ROOT / "workflow-monitoring.yml"
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 GENERATED_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
+COLLECTOR_JOB_PATH = REPOSITORY_ROOT / "resources/workflow-monitoring.collector.job.yml"
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
@@ -100,60 +98,51 @@ class StoredRunStateDataFrame:
 
 
 class DashboardGenerationTests(unittest.TestCase):
-    """Check SQL escaping, paused monitoring, markers, and stable output."""
+    """Check markers, stable output, and static dashboard SQL."""
 
-    def test_generation_is_independent_of_configuration(self) -> None:
+    def test_build_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
-            first_configuration = temporary_root / "first-workflow-monitoring.yml"
-            second_configuration = temporary_root / "second-workflow-monitoring.yml"
-            first_configuration.write_text(
-                "version: 3\ndefault_timezone: UTC\nworkflows: []\n",
-                encoding="utf-8",
-            )
-            second_configuration.write_text(
-                textwrap.dedent(
-                    """
-                    version: 3
-                    default_timezone: Australia/Melbourne
-                    workflows:
-                      - job_id: 42
-                        monitoring_status: active
-                        sla:
-                          frequency: daily
-                          completion_time: "06:00"
-                    """
-                ),
-                encoding="utf-8",
-            )
             first_output = temporary_root / "first-dashboard.json"
             second_output = temporary_root / "second-dashboard.json"
 
-            for configuration_path, output_path in (
-                (first_configuration, first_output),
-                (second_configuration, second_output),
-            ):
-                self.assertTrue(configuration_path.is_file())
-                generate_dashboard(SCAFFOLD_PATH, output_path)
+            build_dashboard(SCAFFOLD_PATH, first_output)
+            build_dashboard(SCAFFOLD_PATH, second_output)
 
             self.assertEqual(first_output.read_bytes(), second_output.read_bytes())
 
-    def test_generated_dashboard_reads_config_table_and_has_no_markers(self) -> None:
+    def test_built_dashboard_reads_config_table_and_has_no_markers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "dashboard.json"
-            generate_dashboard(SCAFFOLD_PATH, output_path)
+            build_dashboard(SCAFFOLD_PATH, output_path)
             dashboard_text = output_path.read_text(encoding="utf-8")
 
         self.assertEqual(dashboard_text.count("FROM workflow_sla_config"), 3)
-        for marker in (
-            "{{CONFIGURED_WORKFLOWS}}",
-            "{{WORKFLOW_METADATA}}",
-            "{{COLLECTED_RUNS_TABLE}}",
-            *CUSTOM_VISUALIZATION_FILES,
-        ):
+        for marker in CUSTOM_VISUALIZATION_FILES:
             self.assertNotIn(marker, dashboard_text)
 
-    def test_generation_rejects_invalid_scaffolds_and_duplicate_markers(self) -> None:
+    def test_built_dashboard_contains_no_configured_values(self) -> None:
+        bundle_configuration = yaml.safe_load(
+            (REPOSITORY_ROOT / "databricks.yml").read_text(encoding="utf-8")
+        )
+        tracked_configuration = yaml.safe_load(
+            TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8")
+        )
+        configured_values = (
+            bundle_configuration["variables"]["catalog"]["default"],
+            bundle_configuration["variables"]["schema"]["default"],
+            *(str(workflow["job_id"]) for workflow in tracked_configuration["workflows"]),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "dashboard.json"
+            build_dashboard(SCAFFOLD_PATH, output_path)
+            dashboard_text = output_path.read_text(encoding="utf-8")
+
+        for configured_value in configured_values:
+            self.assertNotIn(configured_value, dashboard_text)
+
+    def test_build_rejects_invalid_scaffolds_and_duplicate_markers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             output_path = temporary_root / "dashboard.json"
@@ -161,15 +150,7 @@ class DashboardGenerationTests(unittest.TestCase):
             invalid_json_path = temporary_root / "invalid-json.json"
             invalid_json_path.write_text("{", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "parse dashboard scaffold"):
-                generate_dashboard(invalid_json_path, output_path)
-
-            missing_source_marker_path = temporary_root / "missing-source-marker.json"
-            missing_source_marker_path.write_text(
-                json.dumps({"query": "safe SQL"}),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "no source marker.*WORKFLOW_METADATA"):
-                generate_dashboard(missing_source_marker_path, output_path)
+                build_dashboard(invalid_json_path, output_path)
 
             visualization_path = temporary_root / "visualization.json"
             visualization_path.write_text(
@@ -186,7 +167,7 @@ class DashboardGenerationTests(unittest.TestCase):
             duplicate_visualization_marker_path.write_text(
                 json.dumps(
                     {
-                        "query": "{{WORKFLOW_METADATA}} {{COLLECTED_RUNS_TABLE}}",
+                        "query": "safe SQL",
                         "first_visualization": "{{TEST_VISUALIZATION}}",
                         "second_visualization": "{{TEST_VISUALIZATION}}",
                     }
@@ -201,7 +182,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(ValueError, "duplicate custom visualization marker"),
             ):
-                generate_dashboard(
+                build_dashboard(
                     duplicate_visualization_marker_path,
                     output_path,
                 )
@@ -249,7 +230,7 @@ class DashboardGenerationTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, expected_error):
                         _load_custom_visualization(visualization_path)
 
-    def test_generation_injects_valid_custom_visualizations(self) -> None:
+    def test_build_injects_valid_custom_visualizations(self) -> None:
         expected_visualizations = {
             "sla-delivery-calendar": "sla-delivery-calendar.vega.json",
             "delivery-margin-timeline": "delivery-margin-timeline.vega.json",
@@ -259,7 +240,7 @@ class DashboardGenerationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "dashboard.json"
-            generate_dashboard(SCAFFOLD_PATH, output_path)
+            build_dashboard(SCAFFOLD_PATH, output_path)
             generated_dashboard = json.loads(output_path.read_text(encoding="utf-8"))
             generated_widgets = {
                 layout_entry["widget"]["name"]: layout_entry["widget"]
@@ -305,13 +286,10 @@ class DashboardGenerationTests(unittest.TestCase):
                     }
                     self.assertLessEqual(referenced_fields - derived_fields, encoded_fields)
 
-    def test_generation_uses_governed_tables_and_collector_job(self) -> None:
+    def test_build_uses_governed_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_path = Path(temporary_directory)
-            dashboard_path = temporary_path / "dashboard.json"
-            resource_path = temporary_path / "workflow-monitoring.jobs-api.job.yml"
-            generate_dashboard(SCAFFOLD_PATH, dashboard_path)
-            generate_collector_job_resource(resource_path)
+            dashboard_path = Path(temporary_directory) / "dashboard.json"
+            build_dashboard(SCAFFOLD_PATH, dashboard_path)
 
             dashboard_text = dashboard_path.read_text(encoding="utf-8")
             self.assertIn("INNER JOIN workflow_run_api_state t", dashboard_text)
@@ -321,142 +299,72 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertIn("Jobs API data stale", dashboard_text)
             self.assertIn("c.configured_job_id AS job_id", dashboard_text)
             self.assertIn("COALESCE(collected_job.job_name", dashboard_text)
-            resource_text = resource_path.read_text(encoding="utf-8")
-            self.assertIn(
-                "# Generated by workflow_monitoring_dashboard.py. Do not edit.", resource_text
-            )
-            resource_document = yaml.safe_load(resource_text)
-            collector_job = resource_document["resources"]["jobs"][
-                "workflow_monitoring_jobs_api_collector"
-            ]
-            self.assertEqual(collector_job["schedule"]["quartz_cron_expression"], "0 0/5 * * * ?")
-            self.assertNotIn("pause_status", collector_job["schedule"])
-            self.assertEqual(collector_job["max_concurrent_runs"], 1)
-            self.assertNotIn("queue", collector_job)
-            self.assertEqual(
-                collector_job["environments"],
-                [
-                    {
-                        "environment_key": "workflow_monitoring_collector",
-                        "spec": {
-                            "environment_version": "6",
-                            "dependencies": ["jsonschema==4.26.0", "pyyaml==6.0.3"],
-                        },
-                    }
-                ],
-            )
-            collector_task = collector_job["tasks"][0]
-            self.assertEqual(collector_task["environment_key"], "workflow_monitoring_collector")
-            self.assertNotIn("parameters", collector_job)
-            self.assertEqual(
-                collector_task["spark_python_task"]["python_file"],
-                "../src/collect_workflow_monitoring_jobs_api.py",
-            )
-            self.assertEqual(
-                collector_task["spark_python_task"]["parameters"],
-                [
-                    "--config-path",
-                    "${workspace.file_path}/workflow-monitoring.yml",
-                    "--schema-path",
-                    "${workspace.file_path}/src/workflow-monitoring.schema.json",
-                    "--catalog",
-                    "${var.catalog}",
-                    "--schema",
-                    "${var.schema}",
-                    "--create-catalog-and-schema-if-missing",
-                    "${var.create_catalog_and_schema_if_missing}",
-                ],
-            )
-            self.assertEqual(collector_job["tasks"][1]["run_if"], "ALL_DONE")
-            self.assertEqual(
-                collector_job["tasks"][1]["dashboard_task"]["dashboard_id"],
-                "${resources.dashboards.workflow_monitoring.id}",
-            )
 
-    def test_zero_active_workflows_keep_collector_running(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            resource_path = Path(temporary_directory) / "workflow-monitoring.jobs-api.job.yml"
-            generate_collector_job_resource(resource_path)
-            collector_job = yaml.safe_load(resource_path.read_text(encoding="utf-8"))["resources"][
-                "jobs"
-            ]["workflow_monitoring_jobs_api_collector"]
-            self.assertNotIn("pause_status", collector_job["schedule"])
+    def test_collector_job_resource_matches_runtime_contract(self) -> None:
+        resource_text = COLLECTOR_JOB_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("# Generated by", resource_text)
+        collector_job = yaml.safe_load(resource_text)["resources"]["jobs"][
+            "workflow_monitoring_jobs_api_collector"
+        ]
+        self.assertEqual(collector_job["schedule"]["quartz_cron_expression"], "0 0/5 * * * ?")
+        self.assertEqual(collector_job["max_concurrent_runs"], 1)
+        self.assertNotIn("queue", collector_job)
+        self.assertEqual(
+            collector_job["environments"],
+            [
+                {
+                    "environment_key": "workflow_monitoring_collector",
+                    "spec": {
+                        "environment_version": "6",
+                        "dependencies": ["jsonschema==4.26.0", "pyyaml==6.0.3"],
+                    },
+                }
+            ],
+        )
+        collector_task = collector_job["tasks"][0]
+        self.assertEqual(collector_task["environment_key"], "workflow_monitoring_collector")
+        self.assertNotIn("parameters", collector_job)
+        self.assertEqual(
+            collector_task["spark_python_task"]["python_file"],
+            "../src/collect_workflow_monitoring_jobs_api.py",
+        )
+        self.assertEqual(
+            collector_task["spark_python_task"]["parameters"],
+            [
+                "--config-path",
+                "${workspace.file_path}/workflow-monitoring.yml",
+                "--schema-path",
+                "${workspace.file_path}/src/workflow-monitoring.schema.json",
+                "--catalog",
+                "${var.catalog}",
+                "--schema",
+                "${var.schema}",
+                "--create-catalog-and-schema-if-missing",
+                "${var.create_catalog_and_schema_if_missing}",
+            ],
+        )
+        self.assertEqual(collector_job["tasks"][1]["run_if"], "ALL_DONE")
+        self.assertEqual(
+            collector_job["tasks"][1]["dashboard_task"]["dashboard_id"],
+            "${resources.dashboards.workflow_monitoring.id}",
+        )
+
+    def test_collector_job_does_not_set_pause_status(self) -> None:
+        collector_job = yaml.safe_load(COLLECTOR_JOB_PATH.read_text(encoding="utf-8"))["resources"][
+            "jobs"
+        ]["workflow_monitoring_jobs_api_collector"]
+        self.assertNotIn("pause_status", collector_job["schedule"])
 
 
-class DashboardCommandTests(unittest.TestCase):
-    """Exercise successful and failed CLI command paths."""
+class ConfigurationContractTests(unittest.TestCase):
+    """Keep the tracked configuration loadable without a user command."""
 
-    def test_validate_and_generate_commands(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_root = Path(temporary_directory)
-            configuration_path = temporary_root / "workflow-monitoring.yml"
-            configuration_path.write_text(
-                textwrap.dedent(
-                    """\
-                    version: 3
-                    default_timezone: UTC
-                    workflows: []
-                    """
-                ),
-                encoding="utf-8",
-            )
-
-            validation_stdout = StringIO()
-            with redirect_stdout(validation_stdout):
-                validation_exit_code = dashboard_main(
-                    [
-                        "validate",
-                        "--config",
-                        str(configuration_path),
-                        "--schema",
-                        str(SCHEMA_PATH),
-                    ]
-                )
-            self.assertEqual(validation_exit_code, 0)
-            self.assertEqual(
-                validation_stdout.getvalue(), "valid configuration: 0 active workflows\n"
-            )
-
-            dashboard_output_path = temporary_root / "dashboard.json"
-            collector_resource_output_path = temporary_root / "collector.yml"
-            generation_stdout = StringIO()
-            with redirect_stdout(generation_stdout):
-                generation_exit_code = dashboard_main(
-                    [
-                        "generate",
-                        "--scaffold",
-                        str(SCAFFOLD_PATH),
-                        "--output",
-                        str(dashboard_output_path),
-                        "--jobs-api-resource-output",
-                        str(collector_resource_output_path),
-                    ]
-                )
-            self.assertEqual(generation_exit_code, 0)
-            self.assertEqual(
-                generation_stdout.getvalue(),
-                f"generated dashboard: {dashboard_output_path}\n",
-            )
-            self.assertTrue(dashboard_output_path.is_file())
-            self.assertTrue(collector_resource_output_path.is_file())
-
-    def test_command_reports_configuration_read_errors(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            missing_configuration_path = Path(temporary_directory) / "missing-configuration.yml"
-            command_stderr = StringIO()
-            with redirect_stderr(command_stderr):
-                command_exit_code = dashboard_main(
-                    [
-                        "validate",
-                        "--config",
-                        str(missing_configuration_path),
-                        "--schema",
-                        str(SCHEMA_PATH),
-                    ]
-                )
-
-        self.assertEqual(command_exit_code, 1)
-        self.assertIn(str(missing_configuration_path), command_stderr.getvalue())
+    def test_tracked_configuration_loads(self) -> None:
+        configuration = load_workflow_monitoring_configuration(
+            TRACKED_CONFIGURATION_PATH,
+            SCHEMA_PATH,
+        )
+        self.assertIsInstance(configuration, WorkflowMonitoringConfiguration)
 
 
 class DashboardScaffoldTests(unittest.TestCase):
@@ -534,7 +442,10 @@ class DashboardScaffoldTests(unittest.TestCase):
         for dataset in scaffold["datasets"]:
             dataset_sql = "".join(dataset["queryLines"])
             self.assertEqual(dataset_sql.count("FROM workflow_sla_config"), 1)
-            self.assertEqual(dataset_sql.count("{{WORKFLOW_METADATA}}"), 1)
+            self.assertEqual(dataset_sql.count("FROM workflow_job_api_state"), 1)
+            self.assertEqual(dataset_sql.count("workflow_run_api_state"), 1)
+            self.assertNotIn("{{WORKFLOW_METADATA}}", dataset_sql)
+            self.assertNotIn("{{COLLECTED_RUNS_TABLE}}", dataset_sql)
 
         expected_page_names = {"operations", "trends"}
         self.assertEqual({page["name"] for page in scaffold["pages"]}, expected_page_names)
@@ -597,7 +508,7 @@ class DashboardScaffoldTests(unittest.TestCase):
             "sequence(-1, 14)",
             "date_sub(current_date(), 100)",
             "unsuccessful_runs_30d",
-            "{{COLLECTED_RUNS_TABLE}}",
+            "workflow_run_api_state",
         )
         for required_sql_fragment in required_sql_fragments:
             self.assertIn(required_sql_fragment, scaffold_text)
@@ -886,13 +797,10 @@ class JobsApiCollectorTests(unittest.TestCase):
 
         self.assertEqual(list(row), ddl_columns)
 
-    def test_generated_environment_pins_match_uv_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            resource_path = Path(temporary_directory) / "collector.yml"
-            generate_collector_job_resource(resource_path)
-            collector_job = yaml.safe_load(resource_path.read_text(encoding="utf-8"))["resources"][
-                "jobs"
-            ]["workflow_monitoring_jobs_api_collector"]
+    def test_collector_environment_pins_match_uv_lock(self) -> None:
+        collector_job = yaml.safe_load(COLLECTOR_JOB_PATH.read_text(encoding="utf-8"))["resources"][
+            "jobs"
+        ]["workflow_monitoring_jobs_api_collector"]
 
         dependencies = collector_job["environments"][0]["spec"]["dependencies"]
         with (REPOSITORY_ROOT / "uv.lock").open("rb") as lock_file:
@@ -1730,14 +1638,14 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertTrue(tracked_configuration_path.is_file())
         self.assertFalse((REPOSITORY_ROOT / "workflow-monitoring.template.yml").exists())
         self.assertTrue(
-            (REPOSITORY_ROOT / "resources/workflow-monitoring.jobs-api.job.yml").is_file()
+            (REPOSITORY_ROOT / "resources/workflow-monitoring.collector.job.yml").is_file()
         )
         self.assertNotIn(
             "workflow-monitoring.yml",
             (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8"),
         )
         self.assertNotIn(
-            "resources/workflow-monitoring.jobs-api.job.yml",
+            "resources/workflow-monitoring.collector.job.yml",
             (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8"),
         )
         tracked_configuration = yaml.safe_load(

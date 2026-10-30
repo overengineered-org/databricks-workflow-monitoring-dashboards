@@ -24,8 +24,8 @@ workflow-monitoring.yml
   -> one AI/BI monitoring dashboard
 ```
 
-The generated collector calls the API and refreshes the dashboard. The dashboard does not run
-Python or call the Jobs API directly.
+The collector calls the API and refreshes the dashboard. The dashboard does not run Python or
+call the Jobs API directly.
 
 ## Start here
 
@@ -107,16 +107,13 @@ missing.
 
 ### 4. Validate the configuration
 
-The local validation check is optional:
-
 ```sh
-uv run --no-dev python workflow_monitoring_dashboard.py validate
-
 databricks bundle validate --strict -t dev --profile <profile> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-Do not edit generated files directly. Maintainers regenerate them after scaffold changes. See
+Configuration errors appear in the collector Job run output. Do not edit the built dashboard
+directly. Maintainers rebuild it after scaffold changes. See
 [Contributing](CONTRIBUTING.md#2-edit-the-owning-source).
 
 ### 5. Deploy and load the first data
