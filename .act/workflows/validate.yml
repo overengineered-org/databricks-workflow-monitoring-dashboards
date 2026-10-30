@@ -48,8 +48,7 @@ jobs:
       - name: Generate dashboard
         # Generation proves that the tracked fake configuration stays deployable.
         run: |
-          uv run python workflow_monitoring_dashboard.py generate \
-            --workspace-id 1234567890123456
+          uv run python workflow_monitoring_dashboard.py generate
       - name: Check generated deployment files
         run: |
           cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json

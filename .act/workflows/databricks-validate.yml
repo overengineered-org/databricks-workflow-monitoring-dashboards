@@ -28,7 +28,7 @@ jobs:
       - name: Install committed Python environment
         run: uv sync --locked
       - name: Generate dashboard
-        run: uv run python workflow_monitoring_dashboard.py generate --workspace-id 1234567890123456
+        run: uv run python workflow_monitoring_dashboard.py generate
       - name: Validate SQL datasets
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}

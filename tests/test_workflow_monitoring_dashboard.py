@@ -14,7 +14,7 @@ import tomllib
 import unittest
 from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -45,7 +45,6 @@ from src.workflow_monitoring_config import (
 )
 from workflow_monitoring_dashboard import (
     CUSTOM_VISUALIZATION_FILES,
-    DashboardGenerationConfiguration,
     _load_custom_visualization,
     generate_collector_job_resource,
     generate_dashboard,
@@ -103,132 +102,58 @@ class StoredRunStateDataFrame:
 class DashboardGenerationTests(unittest.TestCase):
     """Check SQL escaping, paused monitoring, markers, and stable output."""
 
-    def test_generation_is_safe_and_deterministic(self) -> None:
-        monthly_day = 31
-        configurations = (
-            (
-                "active workflow",
-                DashboardGenerationConfiguration(
-                    workspace_id="123456789",
-                    active_workflows=(
-                        ActiveWorkflow(
-                            job_id=42,
-                            sla=ServiceLevelAgreement(
-                                frequency="monthly",
-                                completion_time="06:00",
-                                timezone="UTC",
-                                day_of_month=monthly_day,
-                            ),
-                        ),
-                    ),
-                ),
-                ("CAST('42' AS STRING)", "CAST(31 AS INT)"),
-            ),
-            (
-                "fortnightly workflow",
-                DashboardGenerationConfiguration(
-                    workspace_id="123456789",
-                    active_workflows=(
-                        ActiveWorkflow(
-                            job_id=43,
-                            sla=ServiceLevelAgreement(
-                                frequency="fortnightly",
-                                completion_time="06:00",
-                                timezone="UTC",
-                                first_deadline_date=date(2026, 1, 12),
-                            ),
-                        ),
-                    ),
-                ),
-                ("CAST('43' AS STRING)", "CAST('2026-01-12' AS DATE)"),
-            ),
-            (
-                "weekly workflow",
-                DashboardGenerationConfiguration(
-                    workspace_id="123456789",
-                    active_workflows=(
-                        ActiveWorkflow(
-                            job_id=44,
-                            sla=ServiceLevelAgreement(
-                                frequency="weekly",
-                                completion_time="06:00",
-                                timezone="UTC",
-                                day_of_week="monday",
-                            ),
-                        ),
-                    ),
-                ),
-                ("CAST('44' AS STRING)", "'monday' AS day_of_week"),
-            ),
-            (
-                "zero active workflows",
-                DashboardGenerationConfiguration(
-                    workspace_id="123456789",
-                    active_workflows=(),
-                ),
-                ("WHERE false", "CAST(NULL AS STRING) AS configured_job_id"),
-            ),
-        )
-
-        for case_name, configuration, expected_texts in configurations:
-            with self.subTest(case_name), tempfile.TemporaryDirectory() as temporary_directory:
-                temporary_path = Path(temporary_directory)
-                scaffold_path = temporary_path / "scaffold.json"
-                first_output_path = temporary_path / "dashboard.json"
-                second_output_path = temporary_path / "dashboard-second.json"
-                scaffold_path.write_text(
-                    json.dumps(
-                        {
-                            "datasets": [
-                                {
-                                    "queryLines": [
-                                        "WITH configured_workflows AS (\n",
-                                        "{{CONFIGURED_WORKFLOWS}}\n",
-                                        ") {{WORKFLOW_METADATA}} "
-                                        "JOIN {{COLLECTED_RUNS_TABLE}} r ON true",
-                                    ]
-                                }
-                            ],
-                            "pages": [],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-
-                generate_dashboard(configuration, scaffold_path, first_output_path)
-                first_output = first_output_path.read_text(encoding="utf-8")
-                self.assertNotIn("{{CONFIGURED_WORKFLOWS}}", first_output)
-                for expected_text in expected_texts:
-                    self.assertIn(expected_text, first_output)
-
-                # Repeated generation must produce byte-for-byte identical JSON.
-                generate_dashboard(configuration, scaffold_path, second_output_path)
-                self.assertEqual(
-                    first_output_path.read_bytes(),
-                    second_output_path.read_bytes(),
-                )
-
-    def test_generation_requires_a_scaffold_marker(self) -> None:
-        configuration = DashboardGenerationConfiguration(
-            workspace_id="123456789",
-            active_workflows=(),
-        )
+    def test_generation_is_independent_of_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_path = Path(temporary_directory)
-            scaffold_path = temporary_path / "scaffold.json"
-            scaffold_path.write_text('{"datasets": [], "pages": []}', encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "contains no configured workflow marker"):
-                generate_dashboard(
-                    configuration,
-                    scaffold_path,
-                    temporary_path / "dashboard.json",
-                )
+            temporary_root = Path(temporary_directory)
+            first_configuration = temporary_root / "first-workflow-monitoring.yml"
+            second_configuration = temporary_root / "second-workflow-monitoring.yml"
+            first_configuration.write_text(
+                "version: 3\ndefault_timezone: UTC\nworkflows: []\n",
+                encoding="utf-8",
+            )
+            second_configuration.write_text(
+                textwrap.dedent(
+                    """
+                    version: 3
+                    default_timezone: Australia/Melbourne
+                    workflows:
+                      - job_id: 42
+                        monitoring_status: active
+                        sla:
+                          frequency: daily
+                          completion_time: "06:00"
+                    """
+                ),
+                encoding="utf-8",
+            )
+            first_output = temporary_root / "first-dashboard.json"
+            second_output = temporary_root / "second-dashboard.json"
+
+            for configuration_path, output_path in (
+                (first_configuration, first_output),
+                (second_configuration, second_output),
+            ):
+                self.assertTrue(configuration_path.is_file())
+                generate_dashboard(SCAFFOLD_PATH, output_path)
+
+            self.assertEqual(first_output.read_bytes(), second_output.read_bytes())
+
+    def test_generated_dashboard_reads_config_table_and_has_no_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "dashboard.json"
+            generate_dashboard(SCAFFOLD_PATH, output_path)
+            dashboard_text = output_path.read_text(encoding="utf-8")
+
+        self.assertEqual(dashboard_text.count("FROM workflow_sla_config"), 3)
+        for marker in (
+            "{{CONFIGURED_WORKFLOWS}}",
+            "{{WORKFLOW_METADATA}}",
+            "{{COLLECTED_RUNS_TABLE}}",
+            *CUSTOM_VISUALIZATION_FILES,
+        ):
+            self.assertNotIn(marker, dashboard_text)
 
     def test_generation_rejects_invalid_scaffolds_and_duplicate_markers(self) -> None:
-        configuration = DashboardGenerationConfiguration(
-            workspace_id="123456789",
-            active_workflows=(),
-        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             output_path = temporary_root / "dashboard.json"
@@ -236,15 +161,15 @@ class DashboardGenerationTests(unittest.TestCase):
             invalid_json_path = temporary_root / "invalid-json.json"
             invalid_json_path.write_text("{", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "parse dashboard scaffold"):
-                generate_dashboard(configuration, invalid_json_path, output_path)
+                generate_dashboard(invalid_json_path, output_path)
 
             missing_source_marker_path = temporary_root / "missing-source-marker.json"
             missing_source_marker_path.write_text(
-                json.dumps({"query": "{{CONFIGURED_WORKFLOWS}}"}),
+                json.dumps({"query": "safe SQL"}),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "no source marker.*WORKFLOW_METADATA"):
-                generate_dashboard(configuration, missing_source_marker_path, output_path)
+                generate_dashboard(missing_source_marker_path, output_path)
 
             visualization_path = temporary_root / "visualization.json"
             visualization_path.write_text(
@@ -261,8 +186,7 @@ class DashboardGenerationTests(unittest.TestCase):
             duplicate_visualization_marker_path.write_text(
                 json.dumps(
                     {
-                        "query": "{{CONFIGURED_WORKFLOWS}} {{WORKFLOW_METADATA}} "
-                        "{{COLLECTED_RUNS_TABLE}}",
+                        "query": "{{WORKFLOW_METADATA}} {{COLLECTED_RUNS_TABLE}}",
                         "first_visualization": "{{TEST_VISUALIZATION}}",
                         "second_visualization": "{{TEST_VISUALIZATION}}",
                     }
@@ -278,7 +202,6 @@ class DashboardGenerationTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "duplicate custom visualization marker"),
             ):
                 generate_dashboard(
-                    configuration,
                     duplicate_visualization_marker_path,
                     output_path,
                 )
@@ -327,10 +250,6 @@ class DashboardGenerationTests(unittest.TestCase):
                         _load_custom_visualization(visualization_path)
 
     def test_generation_injects_valid_custom_visualizations(self) -> None:
-        configuration = DashboardGenerationConfiguration(
-            workspace_id="123456789",
-            active_workflows=(),
-        )
         expected_visualizations = {
             "sla-delivery-calendar": "sla-delivery-calendar.vega.json",
             "delivery-margin-timeline": "delivery-margin-timeline.vega.json",
@@ -340,7 +259,7 @@ class DashboardGenerationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "dashboard.json"
-            generate_dashboard(configuration, SCAFFOLD_PATH, output_path)
+            generate_dashboard(SCAFFOLD_PATH, output_path)
             generated_dashboard = json.loads(output_path.read_text(encoding="utf-8"))
             generated_widgets = {
                 layout_entry["widget"]["name"]: layout_entry["widget"]
@@ -387,24 +306,11 @@ class DashboardGenerationTests(unittest.TestCase):
                     self.assertLessEqual(referenced_fields - derived_fields, encoded_fields)
 
     def test_generation_uses_governed_tables_and_collector_job(self) -> None:
-        workflow_monitoring_configuration = DashboardGenerationConfiguration(
-            workspace_id="123456789",
-            active_workflows=(
-                ActiveWorkflow(
-                    job_id=42,
-                    sla=ServiceLevelAgreement(
-                        frequency="daily",
-                        completion_time="06:00",
-                        timezone="UTC",
-                    ),
-                ),
-            ),
-        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
             dashboard_path = temporary_path / "dashboard.json"
             resource_path = temporary_path / "workflow-monitoring.jobs-api.job.yml"
-            generate_dashboard(workflow_monitoring_configuration, SCAFFOLD_PATH, dashboard_path)
+            generate_dashboard(SCAFFOLD_PATH, dashboard_path)
             generate_collector_job_resource(resource_path)
 
             dashboard_text = dashboard_path.read_text(encoding="utf-8")
@@ -518,51 +424,21 @@ class DashboardCommandTests(unittest.TestCase):
                 generation_exit_code = dashboard_main(
                     [
                         "generate",
-                        "--config",
-                        str(configuration_path),
-                        "--schema",
-                        str(SCHEMA_PATH),
                         "--scaffold",
                         str(SCAFFOLD_PATH),
                         "--output",
                         str(dashboard_output_path),
                         "--jobs-api-resource-output",
                         str(collector_resource_output_path),
-                        "--workspace-id",
-                        "123456789",
                     ]
                 )
             self.assertEqual(generation_exit_code, 0)
             self.assertEqual(
                 generation_stdout.getvalue(),
-                f"generated dashboard: {dashboard_output_path} (0 active workflows)\n",
+                f"generated dashboard: {dashboard_output_path}\n",
             )
             self.assertTrue(dashboard_output_path.is_file())
             self.assertTrue(collector_resource_output_path.is_file())
-
-    def test_generate_rejects_invalid_workspace_id(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            configuration_path = Path(temporary_directory) / "workflow-monitoring.yml"
-            configuration_path.write_text(
-                "version: 3\ndefault_timezone: UTC\nworkflows: []\n",
-                encoding="utf-8",
-            )
-            command_stderr = StringIO()
-            with redirect_stderr(command_stderr), self.assertRaises(SystemExit) as raised_exit:
-                dashboard_main(
-                    [
-                        "generate",
-                        "--config",
-                        str(configuration_path),
-                        "--schema",
-                        str(SCHEMA_PATH),
-                        "--workspace-id",
-                        "12 34",
-                    ]
-                )
-
-        self.assertEqual(raised_exit.exception.code, 2)
-        self.assertIn("invalid validated_workspace_id value: '12 34'", command_stderr.getvalue())
 
     def test_command_reports_configuration_read_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -657,7 +533,7 @@ class DashboardScaffoldTests(unittest.TestCase):
 
         for dataset in scaffold["datasets"]:
             dataset_sql = "".join(dataset["queryLines"])
-            self.assertEqual(dataset_sql.count("{{CONFIGURED_WORKFLOWS}}"), 1)
+            self.assertEqual(dataset_sql.count("FROM workflow_sla_config"), 1)
             self.assertEqual(dataset_sql.count("{{WORKFLOW_METADATA}}"), 1)
 
         expected_page_names = {"operations", "trends"}

@@ -78,13 +78,11 @@ Choose a Databricks profile. This project never selects or stores one for you.
 databricks auth profiles
 databricks current-user me --profile <profile>
 
-databricks auth describe --profile <profile> --output json \
-  | jq -r '.details.configuration.workspace_id.value'
 databricks warehouses list --profile <profile>
 databricks jobs list --profile <profile>
 ```
 
-Keep the workspace ID, SQL warehouse ID, and each Job ID you want to monitor.
+Keep the SQL warehouse ID and each Job ID you want to monitor.
 
 ### 3. Create the configuration
 
@@ -107,19 +105,19 @@ bundle variables. Keep `create_catalog_and_schema_if_missing` set to `false` so 
 never runs `CREATE CATALOG` or `CREATE SCHEMA`. Both modes create the three collector tables when
 missing.
 
-### 4. Generate and validate
+### 4. Validate the configuration
+
+The local validation check is optional:
 
 ```sh
 uv run --no-dev python workflow_monitoring_dashboard.py validate
-uv run --no-dev python workflow_monitoring_dashboard.py generate \
-  --workspace-id <workspace-id>
 
 databricks bundle validate --strict -t dev --profile <profile> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-Review the generated dashboard and collector Job before deployment. Do not edit generated files
-directly. Change `workflow-monitoring.yml` or the dashboard scaffold, then generate again.
+Do not edit generated files directly. Maintainers regenerate them after scaffold changes. See
+[Contributing](CONTRIBUTING.md#2-edit-the-owning-source).
 
 ### 5. Deploy and load the first data
 
@@ -140,7 +138,7 @@ databricks bundle run workflow_monitoring_jobs_api_collector \
 ```
 
 Done means one collector Job, three Delta tables, and one refreshed AI/BI dashboard exist in the
-selected workspace.
+selected workspace. The dashboard shows data after the first collector run.
 
 ## Manage monitored Jobs
 
@@ -154,7 +152,7 @@ The built-in help is the command reference:
 The CLI supports `list`, `add`, `update`, and `remove`. It rejects duplicate Job IDs and invalid
 schedules while preserving YAML comments and workflow order.
 
-After a configuration change, repeat [steps 4 and 5](#4-generate-and-validate).
+After a configuration change, repeat [step 5](#5-deploy-and-load-the-first-data).
 
 ## Choose an SLA schedule
 

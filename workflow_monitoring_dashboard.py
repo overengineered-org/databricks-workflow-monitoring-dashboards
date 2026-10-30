@@ -5,24 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from src.workflow_monitoring_config import (
-    ActiveWorkflow,
-    load_workflow_monitoring_configuration,
-    validated_workspace_id,
-)
+from src.workflow_monitoring_config import load_workflow_monitoring_configuration
 
 DEFAULT_CONFIGURATION_PATH = Path("workflow-monitoring.yml")
 DEFAULT_SCHEMA_PATH = Path("src/workflow-monitoring.schema.json")
 DEFAULT_SCAFFOLD_PATH = Path("src/dashboards/workflow-monitoring.scaffold.lvdash.json")
 DEFAULT_DASHBOARD_PATH = Path("src/dashboards/workflow-monitoring.lvdash.json")
 DEFAULT_JOBS_API_RESOURCE_PATH = Path("resources/workflow-monitoring.jobs-api.job.yml")
-CONFIGURED_WORKFLOWS_MARKER = "{{CONFIGURED_WORKFLOWS}}"
 WORKFLOW_METADATA_MARKER = "{{WORKFLOW_METADATA}}"
 COLLECTED_RUNS_TABLE_MARKER = "{{COLLECTED_RUNS_TABLE}}"
 JOBS_API_RUN_STATE_TABLE = "workflow_run_api_state"
@@ -37,32 +31,13 @@ CUSTOM_VISUALIZATION_FILES = {
 }
 
 
-@dataclass(frozen=True)
-class DashboardGenerationConfiguration:
-    """Validated values that are safe to place in dashboard SQL."""
-
-    workspace_id: str
-    active_workflows: tuple[ActiveWorkflow, ...]
-
-
-def generate_dashboard(
-    configuration: DashboardGenerationConfiguration, scaffold_path: Path, output_path: Path
-) -> None:
+def generate_dashboard(scaffold_path: Path, output_path: Path) -> None:
     """Replace scaffold markers and write deterministic dashboard JSON."""
 
     try:
         dashboard_document = json.loads(scaffold_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise ValueError(f"parse dashboard scaffold: {error}") from error
-
-    configured_workflows_sql = _render_configured_workflows_sql(configuration)
-    configured_workflow_replacement_count = _replace_text_marker(
-        dashboard_document,
-        CONFIGURED_WORKFLOWS_MARKER,
-        configured_workflows_sql,
-    )
-    if configured_workflow_replacement_count == 0:
-        raise ValueError("dashboard scaffold contains no configured workflow marker")
 
     source_markers = {
         WORKFLOW_METADATA_MARKER: _render_workflow_metadata_sql(),
@@ -199,53 +174,6 @@ def _render_workflow_metadata_sql() -> str:
     )
 
 
-def _render_configured_workflows_sql(configuration: DashboardGenerationConfiguration) -> str:
-    if not configuration.active_workflows:
-        # Typed empty columns keep every dataset valid while all workflows are paused.
-        return "\n".join(
-            (
-                "SELECT CAST(NULL AS INT) AS configured_order,",
-                "       CAST(NULL AS STRING) AS workspace_id,",
-                "       CAST(NULL AS STRING) AS configured_job_id,",
-                "       CAST(NULL AS STRING) AS frequency,",
-                "       CAST(NULL AS STRING) AS completion_time,",
-                "       CAST(NULL AS STRING) AS timezone,",
-                "       CAST(NULL AS STRING) AS day_of_week,",
-                "       CAST(NULL AS DATE) AS first_deadline_date,",
-                "       CAST(NULL AS INT) AS day_of_month",
-                "WHERE false",
-            )
-        )
-
-    configured_workflow_selects: list[str] = []
-    for workflow_index, workflow in enumerate(configuration.active_workflows, start=1):
-        job_id_sql = f"CAST('{workflow.job_id}' AS STRING)"
-
-        first_deadline_date_sql = "CAST(NULL AS DATE)"
-        if workflow.sla.first_deadline_date is not None:
-            first_deadline_date_sql = (
-                f"CAST('{workflow.sla.first_deadline_date.isoformat()}' AS DATE)"
-            )
-
-        day_of_month_sql = "CAST(NULL AS INT)"
-        if workflow.sla.day_of_month is not None:
-            day_of_month_sql = f"CAST({workflow.sla.day_of_month} AS INT)"
-
-        configured_workflow_selects.append(
-            "SELECT "
-            f"{workflow_index} AS configured_order, "
-            f"'{_escape_sql_string(configuration.workspace_id)}' AS workspace_id, "
-            f"{job_id_sql} AS configured_job_id, "
-            f"'{_escape_sql_string(workflow.sla.frequency)}' AS frequency, "
-            f"'{_escape_sql_string(workflow.sla.completion_time)}' AS completion_time, "
-            f"'{_escape_sql_string(workflow.sla.timezone)}' AS timezone, "
-            f"{_nullable_sql_string(workflow.sla.day_of_week)} AS day_of_week, "
-            f"{first_deadline_date_sql} AS first_deadline_date, "
-            f"{day_of_month_sql} AS day_of_month"
-        )
-    return "\nUNION ALL\n".join(configured_workflow_selects)
-
-
 def _load_custom_visualization(visualization_path: Path) -> str:
     """Load one readable Vega-Lite file and serialize it for dashboard JSON."""
 
@@ -295,18 +223,6 @@ def _replace_text_marker(document: Any, marker: str, replacement_text: str) -> i
     return replacement_count
 
 
-def _escape_sql_string(sql_text: str) -> str:
-    """Prevent configured text from ending a SQL string literal."""
-
-    return sql_text.replace("'", "''")
-
-
-def _nullable_sql_string(optional_text: str | None) -> str:
-    if not optional_text:
-        return "CAST(NULL AS STRING)"
-    return f"'{_escape_sql_string(optional_text)}'"
-
-
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate workflow monitoring YAML and generate dashboard JSON."
@@ -318,20 +234,12 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA_PATH)
 
     generate_parser = commands.add_parser("generate", help="generate the dashboard JSON")
-    generate_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIGURATION_PATH)
-    generate_parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA_PATH)
     generate_parser.add_argument("--scaffold", type=Path, default=DEFAULT_SCAFFOLD_PATH)
     generate_parser.add_argument("--output", type=Path, default=DEFAULT_DASHBOARD_PATH)
     generate_parser.add_argument(
         "--jobs-api-resource-output",
         type=Path,
         default=DEFAULT_JOBS_API_RESOURCE_PATH,
-    )
-    generate_parser.add_argument(
-        "--workspace-id",
-        required=True,
-        type=validated_workspace_id,
-        help="workspace ID used in generated dashboard SQL until #26",
     )
     return parser
 
@@ -341,28 +249,20 @@ def main(command_arguments: list[str] | None = None) -> int:
 
     parsed_arguments = _build_argument_parser().parse_args(command_arguments)
     try:
-        configuration = load_workflow_monitoring_configuration(
-            parsed_arguments.config,
-            parsed_arguments.schema,
-        )
         if parsed_arguments.command == "validate":
+            configuration = load_workflow_monitoring_configuration(
+                parsed_arguments.config,
+                parsed_arguments.schema,
+            )
             print(f"valid configuration: {len(configuration.active_workflows)} active workflows")
             return 0
 
-        generation_configuration = DashboardGenerationConfiguration(
-            workspace_id=parsed_arguments.workspace_id,
-            active_workflows=configuration.active_workflows,
-        )
         generate_dashboard(
-            generation_configuration,
             parsed_arguments.scaffold,
             parsed_arguments.output,
         )
         generate_collector_job_resource(parsed_arguments.jobs_api_resource_output)
-        print(
-            f"generated dashboard: {parsed_arguments.output} "
-            f"({len(configuration.active_workflows)} active workflows)"
-        )
+        print(f"generated dashboard: {parsed_arguments.output}")
         return 0
     except (OSError, ValueError) as error:
         print(error, file=sys.stderr)
