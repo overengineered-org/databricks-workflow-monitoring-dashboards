@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/overengineered-org/databricks-workflow-monitoring-dashboards/v0.2.0/template/template/%7B%7B.project_name%7D%7D/workflow_monitoring/workflow-monitoring.schema.json
+
+# Track this file in your project. Replace only the fake account values.
+version: 3
+
+default_timezone: "{{.default_timezone}}"
+
+workflows:
+  # Job names come from the Jobs API. Replace this ID, then mark it active.
+  - job_id: 123456
+    monitoring_status: inactive
+    sla:
+      frequency: daily
+      completion_time: "06:00"

@@ -25,7 +25,7 @@ The Codex project environment is defined in `.codex/environments/environment.tom
 `uv sync --locked` when Codex creates a worktree and exposes Bootstrap, Smoke checks, and Full
 local gate actions. The full gate uses the same wrapper as section 3.
 
-The local checks need the Python and `uv` versions in [README step 1](README.md#1-clone-and-prepare)
+The local checks need the Python and `uv` versions in [README step 1](README.md#1-create-the-project)
 and Go 1.25 or newer. The required local Act gate also needs Git, `act`, and a running Docker
 daemon. Start Docker Desktop on macOS or the Docker daemon on Linux before running the gate.
 The Act image supplies `golangci-lint`, `jq`, and the pinned Databricks CLI; they are not host
@@ -64,20 +64,27 @@ warehouse IDs, or organization-specific Job details.
 | Configuration CLI | `cmd/workflow-monitoring/` |
 | Dashboard build | `scripts/build_dashboard.py` |
 | Jobs API collector | `src/collect_workflow_monitoring_jobs_api.py` |
-| Collector Job | `resources/workflow-monitoring.collector.job.yml` |
-| Bundle resources | `databricks.yml` or `resources/` |
+| Collector Job | `template/template/{{.project_name}}/resources/workflow-monitoring.collector.job.yml.tmpl` |
+| Bundle resources | `template/template/{{.project_name}}/databricks.yml.tmpl` or its `resources/` |
+| Bundle template prompts | `template/databricks_template_schema.json` |
+| Product files copied into the template | `scripts/build_template.py` |
 | Dashboard | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 
-Never edit the built dashboard directly. The collector Job is a normal bundle file. Maintainers
-change the dashboard scaffold or a Vega-Lite file, then run:
+Never edit the built dashboard or the copied product files under
+`template/template/{{.project_name}}/workflow_monitoring/` directly. Maintainers change the
+dashboard scaffold or a Vega-Lite file, then run:
 
 ```sh
 uv run python scripts/build_dashboard.py
+uv run python scripts/build_template.py
 ```
 
-Commit the built dashboard.
+Commit the built dashboard and the refreshed template copy.
+
+The collector Job and bundle files are Go templates under `template/template/{{.project_name}}/`.
+Keep the bundle resource key `workflow_monitoring` and the Job task keys stable.
 
 User-facing behavior belongs in the README:
 
@@ -96,6 +103,7 @@ Use targeted checks while editing:
 uv run ruff format --check .
 uv run ruff check .
 uv run python -m unittest discover -s tests -v
+uv run python scripts/build_template.py --check
 go test ./...
 ```
 

@@ -31,44 +31,30 @@ call the Jobs API directly.
 
 A first dev deployment takes about 10 minutes when your Databricks profile already works.
 
-### 1. Clone and prepare
+### 1. Create the project
 
 You need:
 
 | Tool | Minimum |
 | --- | --- |
-| Python | 3.11 |
-| `uv` | 0.12 |
 | Databricks CLI | 1.13.0 |
-| `jq` | current |
 
 ```sh
-git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
-cd databricks-workflow-monitoring-dashboards
-uv sync --locked
-./workflow-monitoring --version
+databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
+  --tag v0.2.0 \
+  --template-dir template \
+  --output-dir .
+cd workflow_monitoring
 ```
 
-The repository-local command downloads the matching prebuilt CLI into the ignored
-`.workflow-monitoring/` directory. It needs no Go installation, administrator rights, `sudo`, or
-global `PATH` change. Before extraction, the launcher gets the exact asset's SHA-256 digest from
-the GitHub Release API and verifies the downloaded archive. On later runs, it verifies the cached
-archive against GitHub again and checks the cached binary against that archive before execution.
+v0.2.0 is the first release with the template.
 
-This detects altered or corrupted download, mirror, and cache bytes. It does not protect against a
-compromised release publisher because that publisher controls which asset GitHub accepts and
-digests. If GitHub's digest is unavailable, missing, or malformed, the launcher fails closed.
+The command creates a project folder named by the `project_name` prompt. The default is
+`workflow_monitoring`. Change the `cd` command if you choose another name.
 
-Windows:
-
-```powershell
-py scripts/run_workflow_monitoring.py --version
-```
-
-If GitHub asset downloads are blocked, set `WORKFLOW_MONITORING_RELEASE_DOWNLOAD_ROOT` to an
-approved mirror that uses the same `releases/download` path and copies the release archives
-unchanged. The launcher still gets the trusted digest from the GitHub Release API, so access to
-that API remains required.
+The command copies the product files into `workflow_monitoring/` and creates the bundle and
+configuration files that you own. Do not edit `workflow_monitoring/`. To upgrade the product
+files, replace that folder with a newer release. The folder `README.md` has the steps.
 
 ### 2. Get the required IDs
 
@@ -86,17 +72,19 @@ Keep the SQL warehouse ID and each Job ID you want to monitor.
 
 ### 3. Create the configuration
 
-Replace the tracked fake configuration and add your first Job:
+Edit `workflow-monitoring.yml` and add your first Job:
 
-```sh
-./workflow-monitoring init --force
+```yaml
+version: 3
 
-./workflow-monitoring add \
-  --job-id <job-id> \
-  --status active \
-  --completion-time 06:00
+default_timezone: UTC
 
-./workflow-monitoring list
+workflows:
+  - job_id: <job-id>
+    monitoring_status: active
+    sla:
+      frequency: daily
+      completion_time: "06:00"
 ```
 
 The collector reads this file on every run and replaces the active workflow rows in
@@ -139,15 +127,8 @@ selected workspace. The dashboard shows data after the first collector run.
 
 ## Manage monitored Jobs
 
-The built-in help is the command reference:
-
-```sh
-./workflow-monitoring --help
-./workflow-monitoring help <command>
-```
-
-The CLI supports `list`, `add`, `update`, and `remove`. It rejects duplicate Job IDs and invalid
-schedules while preserving YAML comments and workflow order.
+Edit `workflow-monitoring.yml`. Keep Job IDs unique and valid for the selected SLA schedule.
+Set `monitoring_status` to `inactive` to exclude a Job without deleting its configuration.
 
 After a configuration change, repeat [step 5](#5-deploy-and-load-the-first-data).
 
@@ -198,9 +179,7 @@ identities, and notebook output are outside this dashboard's scope.
 
 | Problem | Fix |
 | --- | --- |
-| CLI asset download blocked | Use an approved byte-for-byte release mirror, then rerun `./workflow-monitoring`. |
-| GitHub release digest blocked | Allow the GitHub Release API; the launcher will not use an unverified CLI. |
-| Configuration invalid | Run `./workflow-monitoring list`, then complete the reported field. |
+| Configuration invalid | Edit `workflow-monitoring.yml`, then run `databricks bundle validate`. |
 | Storage creation denied | Grant namespace rights or use an existing catalog and schema. |
 | Dashboard data stale | Check the collector schedule, latest run, and run identity. |
 
@@ -215,6 +194,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before you change the repository.
 | Goal | Read |
 | --- | --- |
 | Deploy the dashboard | This README |
+| Upgrade the product files | `workflow_monitoring/README.md` in your project |
 | Try disposable sample Jobs | [Fast Logistics example](examples/fast-logistics/README.md) |
 | Change repository code | [Contributing](CONTRIBUTING.md) |
 | Publish a version | [Releasing](RELEASING.md) |

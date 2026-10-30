@@ -16,7 +16,7 @@ import (
 const (
 	defaultConfigurationPath = "workflow-monitoring.yml"
 	configurationVersion     = 3
-	schemaHeader             = "# yaml-language-server: $schema=./src/workflow-monitoring.schema.json\n"
+	schemaHeader             = "# yaml-language-server: $schema=./workflow_monitoring/workflow-monitoring.schema.json\n"
 )
 
 var weekdayPattern = regexp.MustCompile(
