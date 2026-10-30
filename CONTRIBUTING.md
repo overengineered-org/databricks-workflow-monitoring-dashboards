@@ -119,7 +119,24 @@ The `validate` check must pass on each pull request.
 Live Databricks validation is optional unless a maintainer requests it. Every live command must
 use the selected profile as `--profile <name>`.
 
-## 4. Open the pull request
+## 4. Sign your commits (DCO)
+
+Every commit in a pull request needs a [Developer Certificate of Origin](https://developercertificate.org)
+(DCO) sign-off. The sign-off email must equal the commit author email. The `dco` check fails
+otherwise.
+
+```sh
+git commit -s -m "fix: correct the run date zone"
+```
+
+To fix earlier commits in a branch:
+
+```sh
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
+## 5. Open the pull request
 
 Include:
 

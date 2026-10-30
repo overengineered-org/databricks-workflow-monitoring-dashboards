@@ -99,7 +99,7 @@ class RepositoryWorkflowTests(unittest.TestCase):
         paths = _workflow_paths(WORKFLOW_DIRECTORY)
         self.assertEqual(
             {path.name for path in paths},
-            {"runner-guard.yml", "validate.yml"},
+            {"dco.yml", "runner-guard.yml", "validate.yml"},
         )
         self.assertEqual(check_workflows(WORKFLOW_DIRECTORY), [])
 

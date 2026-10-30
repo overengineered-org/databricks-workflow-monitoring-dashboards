@@ -1,0 +1,39 @@
+name: DCO check
+
+# This check runs on pull request commits. It verifies that each commit has a
+# Developer Certificate of Origin sign-off that matches its author.
+#
+# Cost guardrails: every job uses exactly ubuntu-latest. Never use a
+# non-standard runner, a runner group, labels, or a self-hosted runner. Never
+# add repository secrets, target pull request triggers, artifact uploads, or
+# paid actions.
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: dco-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check workflow runners
+        run: python3 scripts/check_workflow_runners.py
+
+  dco:
+    needs: runner-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Check DCO sign-off
+        run: python3 scripts/check_dco.py "$BASE_SHA" "$HEAD_SHA"
