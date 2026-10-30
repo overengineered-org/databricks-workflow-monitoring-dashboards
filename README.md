@@ -20,7 +20,7 @@ You deploy three components:
 ```text
 workflow-monitoring.yml
   -> five-minute Jobs API collector
-  -> two governed Delta tables
+  -> three governed Delta tables
   -> one AI/BI monitoring dashboard
 ```
 
@@ -78,22 +78,18 @@ Choose a Databricks profile. This project never selects or stores one for you.
 databricks auth profiles
 databricks current-user me --profile <profile>
 
-databricks auth describe --profile <profile> --output json \
-  | jq -r '.details.configuration.workspace_id.value'
 databricks warehouses list --profile <profile>
 databricks jobs list --profile <profile>
 ```
 
-Keep the workspace ID, SQL warehouse ID, and each Job ID you want to monitor.
+Keep the SQL warehouse ID and each Job ID you want to monitor.
 
 ### 3. Create the configuration
 
 Replace the tracked fake configuration and add your first Job:
 
 ```sh
-./workflow-monitoring init \
-  --workspace-id <workspace-id> \
-  --force
+./workflow-monitoring init --force
 
 ./workflow-monitoring add \
   --job-id <job-id> \
@@ -103,49 +99,46 @@ Replace the tracked fake configuration and add your first Job:
 ./workflow-monitoring list
 ```
 
-This default creates `workflow_monitoring.lakeflow_jobs` when the collector first runs.
+The collector reads this file on every run and replaces the active workflow rows in
+`workflow_sla_config`. To use an existing catalog and schema, set the `catalog` and `schema`
+bundle variables. Keep `create_catalog_and_schema_if_missing` set to `false` so the collector
+never runs `CREATE CATALOG` or `CREATE SCHEMA`. Both modes create the three collector tables when
+missing.
 
-To use an existing catalog and schema instead:
+### 4. Validate the configuration
 
-```sh
-./workflow-monitoring init \
-  --workspace-id <workspace-id> \
-  --catalog <existing-catalog> \
-  --schema <existing-schema> \
-  --force
-```
-
-Bring-your-own storage never creates the catalog or schema. Both modes create the two collector
-tables when missing.
-
-### 4. Generate and validate
+The local validation check is optional:
 
 ```sh
 uv run --no-dev python workflow_monitoring_dashboard.py validate
-uv run --no-dev python workflow_monitoring_dashboard.py generate
 
 databricks bundle validate --strict -t dev --profile <profile> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-Review the generated dashboard and collector Job before deployment. Do not edit generated files
-directly. Change `workflow-monitoring.yml` or the dashboard scaffold, then generate again.
+Do not edit generated files directly. Maintainers regenerate them after scaffold changes. See
+[Contributing](CONTRIBUTING.md#2-edit-the-owning-source).
 
 ### 5. Deploy and load the first data
 
 These commands create workspace resources and run serverless compute:
 
+For the first deploy, pass `--var="create_catalog_and_schema_if_missing=true"` so the collector
+can create the default catalog and schema. Leave it set to `false` when you bring your own
+catalog and schema.
+
 ```sh
 databricks bundle deploy -t dev --profile <profile> \
-  --var="warehouse_id=<warehouse-id>"
+  --var="warehouse_id=<warehouse-id>" \
+  --var="create_catalog_and_schema_if_missing=true"
 
 databricks bundle run workflow_monitoring_jobs_api_collector \
   -t dev --profile <profile> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-Done means one collector Job, two Delta tables, and one refreshed AI/BI dashboard exist in the
-selected workspace.
+Done means one collector Job, three Delta tables, and one refreshed AI/BI dashboard exist in the
+selected workspace. The dashboard shows data after the first collector run.
 
 ## Manage monitored Jobs
 
@@ -159,7 +152,7 @@ The built-in help is the command reference:
 The CLI supports `list`, `add`, `update`, and `remove`. It rejects duplicate Job IDs and invalid
 schedules while preserving YAML comments and workflow order.
 
-After a configuration change, repeat [steps 4 and 5](#4-generate-and-validate).
+After a configuration change, repeat [step 5](#5-deploy-and-load-the-first-data).
 
 ## Choose an SLA schedule
 
@@ -195,7 +188,7 @@ day in shorter months.
 ## Before production
 
 1. Add bundle `run_as` configuration for a service principal.
-2. Grant the run identity access to configured Jobs and the two Delta tables.
+2. Grant the run identity access to configured Jobs and the three Delta tables.
 3. Grant dashboard refresh access and SQL warehouse access.
 4. Confirm the viewer group in the bundle settings.
 
@@ -211,7 +204,6 @@ identities, and notebook output are outside this dashboard's scope.
 | CLI asset download blocked | Use an approved byte-for-byte release mirror, then rerun `./workflow-monitoring`. |
 | GitHub release digest blocked | Allow the GitHub Release API; the launcher will not use an unverified CLI. |
 | Configuration invalid | Run `./workflow-monitoring list`, then complete the reported field. |
-| Workspace ID mismatch | Copy the ID from `databricks auth describe --profile <profile>`. |
 | Storage creation denied | Grant namespace rights or use an existing catalog and schema. |
 | Dashboard data stale | Check the collector schedule, latest run, and run identity. |
 

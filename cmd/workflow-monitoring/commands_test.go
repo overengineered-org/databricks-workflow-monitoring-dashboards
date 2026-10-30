@@ -15,7 +15,7 @@ func TestConfigurationLifecycle(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
 
-	initOutput := executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
+	initOutput := executeCommand(t, configurationPath, "init")
 	if !strings.Contains(initOutput, "use the add command") {
 		t.Fatalf("init output does not provide invocation-neutral guidance: %s", initOutput)
 	}
@@ -66,9 +66,6 @@ func TestConfigurationLifecycle(t *testing.T) {
 	if len(configuration.Workflows) != 1 {
 		t.Fatalf("expected one workflow, got %d", len(configuration.Workflows))
 	}
-	if configuration.CollectorStorage != nil {
-		t.Fatalf("expected automatic storage, got %#v", configuration.CollectorStorage)
-	}
 	workflow := configuration.Workflows[0]
 	if workflow.JobID != 42 || workflow.MonitoringStatus != "active" {
 		t.Fatalf("unexpected workflow: %#v", workflow)
@@ -101,9 +98,9 @@ func TestCLIExitCodes(t *testing.T) {
 	}{
 		{
 			name:              "invalid usage",
-			commandArguments:  []string{"init"},
+			commandArguments:  []string{"init", "--default-timezone", "Nowhere/Invalid"},
 			expectedExitCode:  2,
-			expectedErrorText: "--workspace-id",
+			expectedErrorText: "use an IANA timezone",
 		},
 		{
 			name: "runtime failure",
@@ -162,13 +159,11 @@ func TestCLIExitCodes(t *testing.T) {
 func TestInitRequiresForceToReplaceConfiguration(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
-	executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
+	executeCommand(t, configurationPath, "init")
 
 	_, commandError := runCommand(
 		configurationPath,
 		"init",
-		"--workspace-id",
-		"987654321",
 	)
 	if commandError == nil || !errors.Is(commandError, errInvalidUsage) {
 		t.Fatalf("expected replacement usage error, got %v", commandError)
@@ -177,15 +172,15 @@ func TestInitRequiresForceToReplaceConfiguration(t *testing.T) {
 		t,
 		configurationPath,
 		"init",
-		"--workspace-id",
-		"987654321",
+		"--default-timezone",
+		"Australia/Melbourne",
 		"--force",
 	)
 	document, loadError := loadConfigurationDocument(configurationPath)
 	if loadError != nil {
 		t.Fatal(loadError)
 	}
-	if document.configuration.WorkspaceID != "987654321" {
+	if document.configuration.DefaultTimezone != "Australia/Melbourne" {
 		t.Fatalf("configuration was not replaced: %#v", document.configuration)
 	}
 }
@@ -193,7 +188,7 @@ func TestInitRequiresForceToReplaceConfiguration(t *testing.T) {
 func TestAddRejectsDuplicateJobID(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
-	executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
+	executeCommand(t, configurationPath, "init")
 	executeCommand(
 		t,
 		configurationPath,
@@ -228,95 +223,10 @@ func TestAddRejectsDuplicateJobID(t *testing.T) {
 	}
 }
 
-func TestInitSelectsExistingStorage(t *testing.T) {
-	t.Parallel()
-	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
-	executeCommand(
-		t,
-		configurationPath,
-		"init",
-		"--workspace-id",
-		"123456789",
-		"--catalog",
-		"monitoring",
-		"--schema",
-		"lakeflow_jobs",
-	)
-
-	document, loadError := loadConfigurationDocument(configurationPath)
-	if loadError != nil {
-		t.Fatal(loadError)
-	}
-	storage := document.configuration.CollectorStorage
-	if storage == nil || storage.Catalog != "monitoring" || storage.Schema != "lakeflow_jobs" {
-		t.Fatalf("unexpected storage configuration: %#v", storage)
-	}
-}
-
-func TestInitialConfigurationStorageModes(t *testing.T) {
-	t.Parallel()
-	testCases := []struct {
-		name            string
-		workspaceID     string
-		catalogName     string
-		schemaName      string
-		expectsStorage  bool
-		expectsUsageErr bool
-	}{
-		{
-			name:        "automatic storage",
-			workspaceID: "123456789",
-		},
-		{
-			name:           "existing storage",
-			workspaceID:    "123456789",
-			catalogName:    "monitoring",
-			schemaName:     "lakeflow_jobs",
-			expectsStorage: true,
-		},
-		{
-			name:            "partial storage",
-			workspaceID:     "123456789",
-			catalogName:     "monitoring",
-			expectsUsageErr: true,
-		},
-		{
-			name:            "invalid workspace",
-			workspaceID:     "workspace-name",
-			expectsUsageErr: true,
-		},
-	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			configuration, configurationError := initialConfiguration(
-				testCase.workspaceID,
-				"UTC",
-				testCase.catalogName,
-				testCase.schemaName,
-			)
-			if testCase.expectsUsageErr {
-				if !errors.Is(configurationError, errInvalidUsage) {
-					t.Fatalf("expected usage error, got %v", configurationError)
-				}
-				return
-			}
-			if configurationError != nil {
-				t.Fatal(configurationError)
-			}
-			if (configuration.CollectorStorage != nil) != testCase.expectsStorage {
-				t.Fatalf(
-					"unexpected storage configuration: %#v",
-					configuration.CollectorStorage,
-				)
-			}
-		})
-	}
-}
-
 func TestUpdateRequiresChangedField(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
-	executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
+	executeCommand(t, configurationPath, "init")
 	executeCommand(
 		t,
 		configurationPath,
@@ -336,7 +246,7 @@ func TestUpdateRequiresChangedField(t *testing.T) {
 func TestUpdateFrequencyClearsOldScheduleFields(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
-	executeCommand(t, configurationPath, "init", "--workspace-id", "123456789")
+	executeCommand(t, configurationPath, "init")
 	executeCommand(
 		t,
 		configurationPath,
@@ -375,8 +285,7 @@ func TestExistingCommentsSurviveMutations(t *testing.T) {
 	t.Parallel()
 	configurationPath := filepath.Join(t.TempDir(), "workflow-monitoring.yml")
 	configurationYAML := schemaHeader + `# Account configuration.
-version: 2
-workspace_id: "123456789"
+version: 3
 default_timezone: UTC
 workflows:
   # Existing workflow comment.

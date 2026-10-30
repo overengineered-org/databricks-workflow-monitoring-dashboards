@@ -12,6 +12,15 @@ include:
 variables:
   warehouse_id:
     description: SQL warehouse ID used by the dashboard
+  catalog:
+    description: Unity Catalog catalog for collector tables
+    default: workflow_monitoring
+  schema:
+    description: Unity Catalog schema for collector tables
+    default: lakeflow_jobs
+  create_catalog_and_schema_if_missing:
+    description: Create the configured catalog and schema when the collector starts
+    default: "false"
   dashboard_display_name:
     description: Deployed dashboard display name
     default: Databricks Workflow Monitoring Dashboard
@@ -27,5 +36,7 @@ targets:
   # Production uses one stable path for each user, bundle, and target.
   prod:
     mode: production
+    presets:
+      trigger_pause_status: UNPAUSED
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

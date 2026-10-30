@@ -15,22 +15,13 @@ import (
 
 const (
 	defaultConfigurationPath = "workflow-monitoring.yml"
-	configurationVersion     = 2
-	schemaHeader             = "# yaml-language-server: $schema=./schema/workflow-monitoring.schema.json\n"
+	configurationVersion     = 3
+	schemaHeader             = "# yaml-language-server: $schema=./src/workflow-monitoring.schema.json\n"
 )
 
-var (
-	workspaceIDPattern            = regexp.MustCompile(`^[1-9][0-9]*$`)
-	unityCatalogIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]*$`)
-	weekdayPattern                = regexp.MustCompile(
-		`^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$`,
-	)
+var weekdayPattern = regexp.MustCompile(
+	`^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$`,
 )
-
-type jobsAPIStorageConfiguration struct {
-	Catalog string `yaml:"catalog"`
-	Schema  string `yaml:"schema"`
-}
 
 type serviceLevelAgreement struct {
 	Frequency         string `yaml:"frequency"`
@@ -48,11 +39,9 @@ type monitoredWorkflow struct {
 }
 
 type monitoringConfiguration struct {
-	Version          int                          `yaml:"version"`
-	CollectorStorage *jobsAPIStorageConfiguration `yaml:"jobs_api_config,omitempty"`
-	WorkspaceID      string                       `yaml:"workspace_id"`
-	DefaultTimezone  string                       `yaml:"default_timezone"`
-	Workflows        []monitoredWorkflow          `yaml:"workflows"`
+	Version         int                 `yaml:"version"`
+	DefaultTimezone string              `yaml:"default_timezone"`
+	Workflows       []monitoredWorkflow `yaml:"workflows"`
 }
 
 type configurationDocument struct {
@@ -61,17 +50,7 @@ type configurationDocument struct {
 	rootNode      *yaml.Node
 }
 
-func initialConfiguration(
-	workspaceID string,
-	defaultTimezone string,
-	catalogName string,
-	schemaName string,
-) (monitoringConfiguration, error) {
-	if !workspaceIDPattern.MatchString(workspaceID) {
-		return monitoringConfiguration{}, usageErrorf(
-			"--workspace-id must contain digits and cannot start with zero",
-		)
-	}
+func initialConfiguration(defaultTimezone string) (monitoringConfiguration, error) {
 	if timezoneError := validateTimezone(defaultTimezone); timezoneError != nil {
 		return monitoringConfiguration{}, fmt.Errorf(
 			"%w: --default-timezone: %v",
@@ -79,39 +58,11 @@ func initialConfiguration(
 			timezoneError,
 		)
 	}
-	if (catalogName == "") != (schemaName == "") {
-		return monitoringConfiguration{}, usageErrorf(
-			"--catalog and --schema must be provided together",
-		)
-	}
-	configuration := monitoringConfiguration{
+	return monitoringConfiguration{
 		Version:         configurationVersion,
-		WorkspaceID:     workspaceID,
 		DefaultTimezone: defaultTimezone,
 		Workflows:       []monitoredWorkflow{},
-	}
-	if catalogName == "" {
-		return configuration, nil
-	}
-	if identifierError := validateUnityCatalogIdentifier(catalogName); identifierError != nil {
-		return monitoringConfiguration{}, fmt.Errorf(
-			"%w: --catalog: %v",
-			errInvalidUsage,
-			identifierError,
-		)
-	}
-	if identifierError := validateUnityCatalogIdentifier(schemaName); identifierError != nil {
-		return monitoringConfiguration{}, fmt.Errorf(
-			"%w: --schema: %v",
-			errInvalidUsage,
-			identifierError,
-		)
-	}
-	configuration.CollectorStorage = &jobsAPIStorageConfiguration{
-		Catalog: catalogName,
-		Schema:  schemaName,
-	}
-	return configuration, nil
+	}, nil
 }
 
 func validateWorkflow(workflow monitoredWorkflow, defaultTimezone string) error {
@@ -199,15 +150,6 @@ func validateCompletionTime(candidate string) error {
 	return nil
 }
 
-func validateUnityCatalogIdentifier(candidate string) error {
-	if !unityCatalogIdentifierPattern.MatchString(candidate) {
-		return errors.New(
-			"use letters, digits, underscores, or hyphens; dots are not supported",
-		)
-	}
-	return nil
-}
-
 func newConfigurationDocument(
 	configuration monitoringConfiguration,
 ) (*configurationDocument, error) {
@@ -259,23 +201,8 @@ func validateConfiguration(configuration monitoringConfiguration) error {
 	if configuration.Version != configurationVersion {
 		return fmt.Errorf("configuration version must be %d", configurationVersion)
 	}
-	if !workspaceIDPattern.MatchString(configuration.WorkspaceID) {
-		return errors.New("workspace_id must contain digits and cannot start with zero")
-	}
 	if timezoneError := validateTimezone(configuration.DefaultTimezone); timezoneError != nil {
 		return fmt.Errorf("default_timezone: %w", timezoneError)
-	}
-	if configuration.CollectorStorage != nil {
-		if identifierError := validateUnityCatalogIdentifier(
-			configuration.CollectorStorage.Catalog,
-		); identifierError != nil {
-			return fmt.Errorf("jobs_api_config.catalog: %w", identifierError)
-		}
-		if identifierError := validateUnityCatalogIdentifier(
-			configuration.CollectorStorage.Schema,
-		); identifierError != nil {
-			return fmt.Errorf("jobs_api_config.schema: %w", identifierError)
-		}
 	}
 	seenJobIDs := make(map[int64]struct{}, len(configuration.Workflows))
 	for _, workflow := range configuration.Workflows {

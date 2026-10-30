@@ -1,16 +1,8 @@
-# yaml-language-server: $schema=./schema/workflow-monitoring.schema.json
+# yaml-language-server: $schema=./src/workflow-monitoring.schema.json
 
 # Track this file in adopter repositories. Replace only the fake account values.
-version: 2
+version: 3
 
-# Bring your own existing catalog and schema. Remove this entire block to let the
-# collector create workflow_monitoring.lakeflow_jobs instead.
-jobs_api_config:
-  catalog: workflow_monitoring
-  schema: lakeflow_jobs
-
-# Find this numeric ID with `databricks auth describe --profile <name>`.
-workspace_id: "1234567890123456"
 default_timezone: UTC
 
 workflows:

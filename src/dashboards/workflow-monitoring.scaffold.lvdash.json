@@ -6,7 +6,7 @@
       "queryLines": [
         "WITH configured_workflows AS (\n",
         "-- Generated from active entries in workflow-monitoring.yml.\n",
-        "{{CONFIGURED_WORKFLOWS}}\n",
+        "SELECT configured_order, workspace_id, configured_job_id, frequency, completion_time, timezone, day_of_week, first_deadline_date, day_of_month FROM workflow_sla_config\n",
         "),\n",
         "{{WORKFLOW_METADATA}}\n",
         "workflow_runs AS (\n",
@@ -92,7 +92,7 @@
       "queryLines": [
         "WITH configured_workflows AS (\n",
         "-- Generated from active entries in workflow-monitoring.yml.\n",
-        "{{CONFIGURED_WORKFLOWS}}\n",
+        "SELECT configured_order, workspace_id, configured_job_id, frequency, completion_time, timezone, day_of_week, first_deadline_date, day_of_month FROM workflow_sla_config\n",
         "),\n",
         "{{WORKFLOW_METADATA}}\n",
         "monitored_runs AS (\n",
@@ -131,7 +131,7 @@
       "queryLines": [
         "WITH configured_workflows AS (\n",
         "-- Generated from active entries in workflow-monitoring.yml.\n",
-        "{{CONFIGURED_WORKFLOWS}}\n",
+        "SELECT configured_order, workspace_id, configured_job_id, frequency, completion_time, timezone, day_of_week, first_deadline_date, day_of_month FROM workflow_sla_config\n",
         "),\n",
         "{{WORKFLOW_METADATA}}\n",
         "workflow_runs AS (\n",

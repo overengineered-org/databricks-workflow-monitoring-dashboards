@@ -60,7 +60,7 @@ warehouse IDs, or organization-specific Job details.
 
 | Change | Owning source |
 | --- | --- |
-| Public YAML format | `schema/workflow-monitoring.schema.json` |
+| Public YAML format | `src/workflow-monitoring.schema.json` |
 | Configuration CLI | `cmd/workflow-monitoring/` |
 | Validation or generation | `workflow_monitoring_dashboard.py` |
 | Jobs API collector | `src/collect_workflow_monitoring_jobs_api.py` |
@@ -69,8 +69,14 @@ warehouse IDs, or organization-specific Job details.
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 
-Never edit the generated dashboard or collector Job directly. Change its source, then follow
-[README step 4](README.md#4-generate-and-validate).
+Never edit the generated dashboard or collector Job directly. Maintainers change the dashboard
+scaffold or a Vega-Lite file, then run:
+
+```sh
+uv run python workflow_monitoring_dashboard.py generate
+```
+
+Commit the generated dashboard and collector Job resource.
 
 User-facing behavior belongs in the README:
 

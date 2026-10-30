@@ -1,21 +1,36 @@
-# Databricks notebook source
 """Poll configured Lakeflow Jobs into two governed managed Delta tables."""
 
 from __future__ import annotations
 
-import json
-import re
+import argparse
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+try:
+    from .workflow_monitoring_config import (
+        WorkflowMonitoringConfiguration,
+        load_workflow_monitoring_configuration,
+        validated_unity_catalog_identifier,
+        validated_workspace_id,
+        workflow_sla_config_rows,
+    )
+except ImportError:  # The spark_python_task runs this file directly from src/.
+    from workflow_monitoring_config import (
+        WorkflowMonitoringConfiguration,
+        load_workflow_monitoring_configuration,
+        validated_unity_catalog_identifier,
+        validated_workspace_id,
+        workflow_sla_config_rows,
+    )
 
 RUN_STATE_TABLE_NAME = "workflow_run_api_state"
 JOB_STATE_TABLE_NAME = "workflow_job_api_state"
+SLA_CONFIG_TABLE_NAME = "workflow_sla_config"
 RUN_HISTORY_RETENTION_DAYS = 60
 INCREMENTAL_COLLECTION_OVERLAP_MINUTES = 15
 RUN_STATE_WRITE_BATCH_SIZE = 500
-UNITY_CATALOG_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
-WORKSPACE_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
 SUCCESS_TERMINATION_CODES = {"SUCCESS"}
 CANCELLED_TERMINATION_CODES = {"CANCELED", "USER_CANCELED"}
 SKIPPED_TERMINATION_CODES = {
@@ -66,38 +81,6 @@ def _job_state_schema() -> Any:
             StructField("last_error_message", StringType(), True),
         ]
     )
-
-
-def _validated_unity_catalog_identifier(identifier_name: str, identifier_value: str) -> str:
-    if not UNITY_CATALOG_IDENTIFIER_PATTERN.fullmatch(identifier_value):
-        raise ValueError(f"{identifier_name} is not a supported Unity Catalog identifier")
-    return identifier_value
-
-
-def _validated_workspace_id(workspace_id: str) -> str:
-    if not WORKSPACE_ID_PATTERN.fullmatch(workspace_id):
-        raise ValueError("workspace_id must contain only digits and cannot start with zero")
-    return workspace_id
-
-
-def _runtime_workspace_id(notebook_utilities: Any) -> str:
-    """Read the workspace ID that owns the current notebook run."""
-
-    notebook_context = notebook_utilities.notebook.entry_point.getDbutils().notebook().getContext()
-    return _validated_workspace_id(str(notebook_context.workspaceId().get()))
-
-
-def _validated_runtime_workspace_id(
-    configured_workspace_id: str,
-    notebook_utilities: Any,
-) -> str:
-    runtime_workspace_id = _runtime_workspace_id(notebook_utilities)
-    if configured_workspace_id != runtime_workspace_id:
-        raise ValueError(
-            f"configured workspace_id {configured_workspace_id} does not match runtime workspace "
-            f"{runtime_workspace_id}"
-        )
-    return configured_workspace_id
 
 
 def _quoted_identifier(identifier_value: str) -> str:
@@ -202,6 +185,65 @@ def _prepare_collector_storage(
         ) USING DELTA
         COMMENT 'Latest Jobs API metadata and collection state for each monitored workflow'
         """
+    )
+    spark_session.sql(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_qualified_table_name(catalog_name, schema_name, SLA_CONFIG_TABLE_NAME)} (
+          workspace_id STRING NOT NULL COMMENT 'Databricks workspace ID',
+          configured_order INT NOT NULL COMMENT 'One-based position of the active workflow',
+          configured_job_id STRING NOT NULL COMMENT 'Configured Lakeflow Job ID',
+          frequency STRING NOT NULL COMMENT 'SLA frequency',
+          completion_time STRING NOT NULL COMMENT 'SLA deadline in HH:MM',
+          timezone STRING NOT NULL COMMENT 'Resolved IANA SLA timezone',
+          day_of_week STRING COMMENT 'Weekly SLA day',
+          first_deadline_date DATE COMMENT 'First deadline in a 14-day SLA schedule',
+          day_of_month INT COMMENT 'Monthly SLA day',
+          config_changed_at TIMESTAMP NOT NULL COMMENT 'Latest valid change time in UTC'
+        ) USING DELTA
+        COMMENT 'Latest valid workflow monitoring configuration written by the collector'
+        """
+    )
+
+
+def _replace_workspace_sla_config(
+    spark_session: Any,
+    catalog_name: str,
+    schema_name: str,
+    workspace_id: str,
+    configuration: WorkflowMonitoringConfiguration,
+    config_changed_at: datetime,
+) -> None:
+    """Replace one workspace's config rows in one transaction when they changed."""
+
+    sla_table = _qualified_table_name(catalog_name, schema_name, SLA_CONFIG_TABLE_NAME)
+    stored_sla_table = spark_session.table(sla_table)
+    stored_rows = [
+        {
+            column_name: column_value
+            for column_name, column_value in stored_row.asDict().items()
+            if column_name != "config_changed_at"
+        }
+        for stored_row in stored_sla_table.where(f"workspace_id = '{workspace_id}'").collect()
+    ]
+    stored_rows.sort(key=lambda row: row["configured_order"])
+    new_rows = workflow_sla_config_rows(configuration, workspace_id, config_changed_at)
+    new_rows_without_timestamp = [
+        {
+            column_name: column_value
+            for column_name, column_value in row.items()
+            if column_name != "config_changed_at"
+        }
+        for row in new_rows
+    ]
+    if stored_rows == new_rows_without_timestamp:
+        return
+
+    config_dataframe = spark_session.createDataFrame(new_rows, stored_sla_table.schema)
+    (
+        config_dataframe.write.format("delta")
+        .mode("overwrite")
+        .option("replaceWhere", f"workspace_id = '{workspace_id}'")
+        .saveAsTable(sla_table)
     )
 
 
@@ -416,42 +458,59 @@ def _delete_unretrievable_run_state(
         )
 
 
+def _build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Collect Lakeflow Jobs API state.")
+    parser.add_argument("--config-path", type=Path, required=True)
+    parser.add_argument("--schema-path", type=Path, required=True)
+    parser.add_argument("--catalog", required=True)
+    parser.add_argument("--schema", required=True)
+    parser.add_argument(
+        "--create-catalog-and-schema-if-missing",
+        required=True,
+        choices=("true", "false"),
+    )
+    return parser
+
+
+def _spark_session() -> Any:
+    from pyspark.sql import SparkSession  # type: ignore[import-not-found]
+
+    return SparkSession.builder.getOrCreate()
+
+
 def main() -> None:
+    command_arguments = _build_argument_parser().parse_args()
+    configuration = load_workflow_monitoring_configuration(
+        command_arguments.config_path,
+        command_arguments.schema_path,
+    )
     from databricks.sdk import WorkspaceClient  # type: ignore[import-not-found]
 
-    spark_session = globals()["spark"]
-    notebook_utilities = globals()["dbutils"]
-    catalog_name = _validated_unity_catalog_identifier(
-        "catalog_name", notebook_utilities.widgets.get("catalog_name")
+    catalog_name = validated_unity_catalog_identifier("catalog_name", command_arguments.catalog)
+    schema_name = validated_unity_catalog_identifier("schema_name", command_arguments.schema)
+    create_catalog_and_schema_if_missing = (
+        command_arguments.create_catalog_and_schema_if_missing == "true"
     )
-    schema_name = _validated_unity_catalog_identifier(
-        "schema_name", notebook_utilities.widgets.get("schema_name")
-    )
-    create_catalog_and_schema_if_missing_value = notebook_utilities.widgets.get(
-        "create_catalog_and_schema_if_missing"
-    )
-    if create_catalog_and_schema_if_missing_value not in {"true", "false"}:
-        raise ValueError("create_catalog_and_schema_if_missing must be true or false")
-    create_catalog_and_schema_if_missing = create_catalog_and_schema_if_missing_value == "true"
-    workspace_id = _validated_runtime_workspace_id(
-        _validated_workspace_id(notebook_utilities.widgets.get("workspace_id")),
-        notebook_utilities,
-    )
-    monitored_job_ids = json.loads(notebook_utilities.widgets.get("monitored_job_ids_json"))
-    if not isinstance(monitored_job_ids, list) or any(
-        isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0
-        for job_id in monitored_job_ids
-    ):
-        raise ValueError("monitored_job_ids_json must contain positive integer job IDs")
+    active_job_ids = [workflow.job_id for workflow in configuration.active_workflows]
 
+    collection_started_at = datetime.now(UTC).replace(tzinfo=None)
+    spark_session = _spark_session()
+    workspace_client = WorkspaceClient()
+    workspace_id = validated_workspace_id(str(workspace_client.get_workspace_id()))
     _prepare_collector_storage(
         spark_session,
         catalog_name,
         schema_name,
         create_catalog_and_schema_if_missing,
     )
-    workspace_client = WorkspaceClient()
-    collection_started_at = datetime.now(UTC).replace(tzinfo=None)
+    _replace_workspace_sla_config(
+        spark_session,
+        catalog_name,
+        schema_name,
+        workspace_id,
+        configuration,
+        collection_started_at,
+    )
     run_history_start_at = collection_started_at - timedelta(days=RUN_HISTORY_RETENTION_DAYS)
     run_state_table = _qualified_table_name(catalog_name, schema_name, RUN_STATE_TABLE_NAME)
     job_state_table = _qualified_table_name(catalog_name, schema_name, JOB_STATE_TABLE_NAME)
@@ -462,17 +521,19 @@ def main() -> None:
         workspace_id,
         run_history_start_at,
     )
+    if not active_job_ids:
+        return
+
     last_success_by_workspace_and_job = _last_successful_collection_by_workspace_and_job(
         spark_session,
         catalog_name,
         schema_name,
         workspace_id,
-        monitored_job_ids,
+        active_job_ids,
     )
     failed_job_ids: list[int] = []
 
-    for monitored_job_id in monitored_job_ids:
-        job_id = int(monitored_job_id)
+    for job_id in active_job_ids:
         job_name: str | None = None
         job_collection_attempt_at = datetime.now(UTC).replace(tzinfo=None)
         try:

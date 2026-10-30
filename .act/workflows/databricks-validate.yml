@@ -33,7 +33,8 @@ jobs:
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
           DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
-        run: scripts/validate-sql-datasets.sh "$DATABRICKS_CONFIG_PROFILE" "$DATABRICKS_WAREHOUSE_ID"
+        # These names match the bundle variable defaults.
+        run: scripts/validate-sql-datasets.sh "$DATABRICKS_CONFIG_PROFILE" "$DATABRICKS_WAREHOUSE_ID" workflow_monitoring lakeflow_jobs
       - name: Validate dev bundle
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
