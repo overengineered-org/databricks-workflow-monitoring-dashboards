@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,10 @@ def build_dashboard(scaffold_path: Path, output_path: Path) -> None:
             visualization_marker,
             _load_custom_visualization(visualization_path),
         )
+        if visualization_replacement_count == 0:
+            raise ValueError(
+                f"dashboard scaffold is missing custom visualization marker {visualization_marker}"
+            )
         if visualization_replacement_count > 1:
             raise ValueError(
                 f"dashboard scaffold contains duplicate custom visualization marker "
@@ -50,7 +55,13 @@ def build_dashboard(scaffold_path: Path, output_path: Path) -> None:
         ensure_ascii=False,
         indent=2,
     )
-    output_path.write_text(built_dashboard_json + "\n", encoding="utf-8")
+    temporary_output_path = output_path.with_name(f".{output_path.name}.tmp")
+    try:
+        temporary_output_path.write_text(built_dashboard_json + "\n", encoding="utf-8")
+        os.replace(temporary_output_path, output_path)
+    except BaseException:
+        temporary_output_path.unlink(missing_ok=True)
+        raise
 
 
 def _load_custom_visualization(visualization_path: Path) -> str:
@@ -76,29 +87,20 @@ def _load_custom_visualization(visualization_path: Path) -> str:
 def _replace_text_marker(document: Any, marker: str, replacement_text: str) -> int:
     """Replace a text marker anywhere inside nested dashboard JSON."""
 
-    replacement_count = 0
     if isinstance(document, dict):
-        for key, child_node in document.items():
-            if isinstance(child_node, str) and marker in child_node:
-                document[key] = child_node.replace(marker, replacement_text)
-                replacement_count += 1
-            else:
-                replacement_count += _replace_text_marker(
-                    child_node,
-                    marker,
-                    replacement_text,
-                )
+        child_nodes = document.items()
     elif isinstance(document, list):
-        for index, child_node in enumerate(document):
-            if isinstance(child_node, str) and marker in child_node:
-                document[index] = child_node.replace(marker, replacement_text)
-                replacement_count += 1
-            else:
-                replacement_count += _replace_text_marker(
-                    child_node,
-                    marker,
-                    replacement_text,
-                )
+        child_nodes = enumerate(document)
+    else:
+        return 0
+
+    replacement_count = 0
+    for key, child_node in child_nodes:
+        if isinstance(child_node, str) and marker in child_node:
+            document[key] = child_node.replace(marker, replacement_text)
+            replacement_count += 1
+        else:
+            replacement_count += _replace_text_marker(child_node, marker, replacement_text)
     return replacement_count
 
 
