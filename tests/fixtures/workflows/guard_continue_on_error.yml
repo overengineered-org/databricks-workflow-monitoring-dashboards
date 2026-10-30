@@ -1,0 +1,14 @@
+name: Guard job continue on error
+on: push
+jobs:
+  runner-guard:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 scripts/check_workflow_runners.py
+  validate:
+    needs: runner-guard
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

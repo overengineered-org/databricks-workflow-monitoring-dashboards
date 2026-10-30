@@ -1,0 +1,15 @@
+name: Not success
+on: push
+jobs:
+  runner-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check workflow runners
+        run: python3 scripts/check_workflow_runners.py
+  validate:
+    needs: runner-guard
+    if: ${{ !success() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
