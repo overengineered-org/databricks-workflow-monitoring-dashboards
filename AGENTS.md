@@ -121,7 +121,8 @@ Change only what the issue or the prompt asks for.
 - If a rename or a refactor looks useful, propose it in the pull request body. Do not do it.
 - In the pull request body, list every change that the request did not name, with its reason.
   Write "None" when there are none.
-- When a change touches `databricks.yml` or `resources/`, list the deployed fields that change.
+- When a change touches `template/template/{{.project_name}}/databricks.yml.tmpl` or
+  `template/template/{{.project_name}}/resources/`, list the deployed fields that change.
 
 ## Review and simplification
 

@@ -1,5 +1,5 @@
 bundle:
-  name: databricks-workflow-monitoring-dashboards
+  name: "{{.project_name}}"
   # Keep local, Act, and deployment behavior on the reviewed CLI generation.
   databricks_cli_version: ">= 1.13.0"
 
@@ -14,19 +14,19 @@ variables:
     description: SQL warehouse ID used by the dashboard
   catalog:
     description: Unity Catalog catalog for collector tables
-    default: workflow_monitoring
+    default: "{{.catalog}}"
   schema:
     description: Unity Catalog schema for collector tables
-    default: lakeflow_jobs
+    default: "{{.schema}}"
   create_catalog_and_schema_if_missing:
     description: Create the configured catalog and schema when the collector starts
-    default: "false"
+    default: '{{ if eq .create_catalog_and_schema_if_missing "yes" }}true{{ else }}false{{ end }}'
   dashboard_display_name:
     description: Deployed dashboard display name
     default: Databricks Workflow Monitoring Dashboard
   dashboard_viewer_group:
     description: Databricks group granted CAN_READ
-    default: users
+    default: "{{.dashboard_viewer_group}}"
 
 targets:
   # Development mode adds the standard Databricks development safeguards.

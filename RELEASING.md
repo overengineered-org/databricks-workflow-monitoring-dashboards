@@ -62,5 +62,5 @@ when archive downloads use a mirror. It fails closed if that digest is unavailab
 altered download, mirror, and cache bytes, but not a compromised release publisher.
 
 Users run the released CLI through the repository-local command documented in
-[README step 1](README.md#1-clone-and-prepare). This repository does not use semantic-release or
+[README step 1](README.md#1-create-the-project). This repository does not use semantic-release or
 GitHub-hosted workflows.

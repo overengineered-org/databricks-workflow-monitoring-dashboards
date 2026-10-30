@@ -44,17 +44,19 @@ from src.workflow_monitoring_config import (
     ActiveWorkflow,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
-    load_workflow_monitoring_configuration,
     validated_workspace_id,
     workflow_sla_config_rows,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPOSITORY_ROOT / "src/workflow-monitoring.schema.json"
-TRACKED_CONFIGURATION_PATH = REPOSITORY_ROOT / "workflow-monitoring.yml"
+TEMPLATE_PROJECT_PATH = REPOSITORY_ROOT / "template/template/{{.project_name}}"
+TRACKED_CONFIGURATION_PATH = TEMPLATE_PROJECT_PATH / "workflow-monitoring.yml.tmpl"
+TEMPLATE_DATABRICKS_PATH = TEMPLATE_PROJECT_PATH / "databricks.yml.tmpl"
+TEMPLATE_INPUT_PATH = REPOSITORY_ROOT / "tests/fixtures/template-input.json"
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 GENERATED_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
-COLLECTOR_JOB_PATH = REPOSITORY_ROOT / "resources/workflow-monitoring.collector.job.yml"
+COLLECTOR_JOB_PATH = TEMPLATE_PROJECT_PATH / "resources/workflow-monitoring.collector.job.yml.tmpl"
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
@@ -137,15 +139,13 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertNotIn(marker, dashboard_text)
 
     def test_built_dashboard_contains_no_configured_values(self) -> None:
-        bundle_configuration = yaml.safe_load(
-            (REPOSITORY_ROOT / "databricks.yml").read_text(encoding="utf-8")
-        )
+        template_input = json.loads(TEMPLATE_INPUT_PATH.read_text(encoding="utf-8"))
         tracked_configuration = yaml.safe_load(
             TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8")
         )
         configured_values = (
-            bundle_configuration["variables"]["catalog"]["default"],
-            bundle_configuration["variables"]["schema"]["default"],
+            template_input["catalog"],
+            template_input["schema"],
             *(str(workflow["job_id"]) for workflow in tracked_configuration["workflows"]),
         )
 
@@ -341,7 +341,7 @@ class DashboardGenerationTests(unittest.TestCase):
         self.assertNotIn("parameters", collector_job)
         self.assertEqual(
             collector_task["spark_python_task"]["python_file"],
-            "../src/collect_workflow_monitoring_jobs_api.py",
+            "../workflow_monitoring/collector/collect_workflow_monitoring_jobs_api.py",
         )
         self.assertEqual(
             collector_task["spark_python_task"]["parameters"],
@@ -349,7 +349,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "--config-path",
                 "${workspace.file_path}/workflow-monitoring.yml",
                 "--schema-path",
-                "${workspace.file_path}/src/workflow-monitoring.schema.json",
+                "${workspace.file_path}/workflow_monitoring/workflow-monitoring.schema.json",
                 "--catalog",
                 "${var.catalog}",
                 "--schema",
@@ -372,14 +372,16 @@ class DashboardGenerationTests(unittest.TestCase):
 
 
 class ConfigurationContractTests(unittest.TestCase):
-    """Keep the tracked configuration loadable without a user command."""
+    """Keep the template configuration structurally valid."""
 
-    def test_tracked_configuration_loads(self) -> None:
-        configuration = load_workflow_monitoring_configuration(
-            TRACKED_CONFIGURATION_PATH,
-            SCHEMA_PATH,
-        )
-        self.assertIsInstance(configuration, WorkflowMonitoringConfiguration)
+    def test_template_configuration_has_required_keys(self) -> None:
+        configuration = yaml.safe_load(TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(configuration["version"], 3)
+        self.assertEqual(configuration["default_timezone"], "{{.default_timezone}}")
+        self.assertTrue(configuration["workflows"])
+        for workflow in configuration["workflows"]:
+            self.assertIn("job_id", workflow)
+            self.assertNotIn("job_name", workflow)
 
 
 class DashboardScaffoldTests(unittest.TestCase):
@@ -1649,18 +1651,16 @@ class RepositoryContractTests(unittest.TestCase):
                 )
 
     def test_cli_and_release_contracts_are_aligned(self) -> None:
-        tracked_configuration_path = REPOSITORY_ROOT / "workflow-monitoring.yml"
+        tracked_configuration_path = TRACKED_CONFIGURATION_PATH
         self.assertTrue(tracked_configuration_path.is_file())
         self.assertFalse((REPOSITORY_ROOT / "workflow-monitoring.template.yml").exists())
-        self.assertTrue(
-            (REPOSITORY_ROOT / "resources/workflow-monitoring.collector.job.yml").is_file()
-        )
+        self.assertTrue(COLLECTOR_JOB_PATH.is_file())
         self.assertNotIn(
-            "workflow-monitoring.yml",
+            "workflow-monitoring.yml.tmpl",
             (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8"),
         )
         self.assertNotIn(
-            "resources/workflow-monitoring.collector.job.yml",
+            "workflow-monitoring.collector.job.yml.tmpl",
             (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8"),
         )
         tracked_configuration = yaml.safe_load(
@@ -1673,9 +1673,7 @@ class RepositoryContractTests(unittest.TestCase):
             all("job_name" not in workflow for workflow in tracked_configuration["workflows"])
         )
 
-        bundle_configuration = yaml.safe_load(
-            (REPOSITORY_ROOT / "databricks.yml").read_text(encoding="utf-8")
-        )
+        bundle_configuration = yaml.safe_load(TEMPLATE_DATABRICKS_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
             bundle_configuration["bundle"]["databricks_cli_version"],
             ">= 1.13.0",
