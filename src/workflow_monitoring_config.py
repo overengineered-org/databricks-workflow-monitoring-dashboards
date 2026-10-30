@@ -35,8 +35,8 @@ class ServiceLevelAgreement:
 
 
 @dataclass(frozen=True)
-class ActiveWorkflow:
-    """One active workflow read from the configuration."""
+class ConfiguredWorkflow:
+    """One workflow read from the configuration, active or inactive."""
 
     job_id: int
     sla: ServiceLevelAgreement
@@ -46,7 +46,7 @@ class ActiveWorkflow:
 class WorkflowMonitoringConfiguration:
     """Validated run-time configuration."""
 
-    active_workflows: tuple[ActiveWorkflow, ...]
+    active_workflows: tuple[ConfiguredWorkflow, ...]
 
 
 def validated_workspace_id(workspace_id: str) -> str:
@@ -87,7 +87,7 @@ def load_workflow_monitoring_configuration(
     except ValueError as error:
         cross_field_errors.append(f"default_timezone: {error}")
 
-    active_workflows: list[ActiveWorkflow] = []
+    active_workflows: list[ConfiguredWorkflow] = []
     job_id_locations: dict[int, int] = {}
     for workflow_index, workflow_document in enumerate(configuration_document["workflows"]):
         configured_workflow, workflow_errors = _validate_workflow(
@@ -193,7 +193,7 @@ def _validate_workflow(
     workflow_document: dict[str, Any],
     default_timezone: str,
     workflow_index: int,
-) -> tuple[ActiveWorkflow, list[str]]:
+) -> tuple[ConfiguredWorkflow, list[str]]:
     """Check workflow rules that depend on more than one YAML field."""
 
     sla_document = workflow_document["sla"]
@@ -214,7 +214,7 @@ def _validate_workflow(
         first_deadline_date = date.fromisoformat(sla_document["first_deadline_date"])
 
     return (
-        ActiveWorkflow(
+        ConfiguredWorkflow(
             job_id=workflow_document["job_id"],
             sla=ServiceLevelAgreement(
                 frequency=sla_document["frequency"],

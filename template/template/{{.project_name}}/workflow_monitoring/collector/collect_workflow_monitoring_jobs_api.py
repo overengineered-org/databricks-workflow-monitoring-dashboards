@@ -94,6 +94,13 @@ def _qualified_table_name(catalog_name: str, schema_name: str, table_name: str) 
     )
 
 
+def _utc_now_naive() -> datetime:
+    """Return the current UTC time without a zone for the TIMESTAMP columns."""
+
+    # The tables store UTC in TIMESTAMP columns that have no zone.
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 def _timestamp_from_epoch_milliseconds(
     epoch_milliseconds: int | None,
 ) -> datetime | None:
@@ -330,6 +337,8 @@ def _run_state_row(
     job_run: Any,
     collection_attempt_at: datetime,
 ) -> dict[str, Any]:
+    # A QUEUED or PENDING run can have no start time yet. Store the collection time
+    # so the NOT NULL period_start_time column has a value.
     run_start_time = _timestamp_from_epoch_milliseconds(getattr(job_run, "start_time", None))
     return {
         "workspace_id": workspace_id,
@@ -493,7 +502,7 @@ def main() -> None:
     )
     active_job_ids = [workflow.job_id for workflow in configuration.active_workflows]
 
-    collection_started_at = datetime.now(UTC).replace(tzinfo=None)
+    collection_started_at = _utc_now_naive()
     spark_session = _spark_session()
     workspace_client = WorkspaceClient()
     workspace_id = validated_workspace_id(str(workspace_client.get_workspace_id()))
@@ -535,7 +544,7 @@ def main() -> None:
 
     for job_id in active_job_ids:
         job_name: str | None = None
-        job_collection_attempt_at = datetime.now(UTC).replace(tzinfo=None)
+        job_collection_attempt_at = _utc_now_naive()
         try:
             job_name = _job_name_from_job_details(
                 job_id,
@@ -616,12 +625,14 @@ def main() -> None:
                         "job_id": str(job_id),
                         "job_name": job_name,
                         "last_collection_attempt_at": job_collection_attempt_at,
-                        "last_successful_collection_at": datetime.now(UTC).replace(tzinfo=None),
+                        "last_successful_collection_at": _utc_now_naive(),
                         "last_error_message": None,
                     }
                 ],
             )
         except Exception as collection_error:
+            # One job failure must not stop collection for the other jobs.
+            # The failed job IDs are raised after the loop.
             failed_job_ids.append(job_id)
             _merge_job_state_rows(
                 spark_session,

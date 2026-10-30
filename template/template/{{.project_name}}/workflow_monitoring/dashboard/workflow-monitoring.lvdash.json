@@ -101,7 +101,7 @@
         "  WHERE t.period_start_time >= date_sub(current_date(), 60)\n",
         "  GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')\n",
         ")\n",
-        "SELECT r.workflow_name, r.job_id, r.run_id, to_date(from_utc_timestamp(r.run_end_time, 'UTC')) AS run_date, r.run_start_time, r.run_end_time,\n",
+        "SELECT r.workflow_name, r.job_id, r.run_id, to_date(r.run_end_time) AS run_date, r.run_start_time, r.run_end_time,\n",
         "  unix_timestamp(r.run_end_time) - unix_timestamp(r.run_start_time) AS duration_seconds, r.result_state,\n",
         "  CASE WHEN r.result_state = 'SUCCEEDED' THEN 'Success' ELSE 'Not successful' END AS run_outcome\n",
         "FROM monitored_runs r\n",
@@ -1624,7 +1624,7 @@
               "encodings": {
                 "x": {
                   "fieldName": "daily(run_date)",
-                  "displayName": "Run date",
+                  "displayName": "Run date (UTC)",
                   "scale": {
                     "type": "temporal"
                   }

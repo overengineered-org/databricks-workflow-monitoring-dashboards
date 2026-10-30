@@ -39,9 +39,10 @@ from src.collect_workflow_monitoring_jobs_api import (
     _prepare_collector_storage,
     _replace_workspace_sla_config,
     _stored_nonterminal_run_ids_for_reconciliation,
+    _utc_now_naive,
 )
 from src.workflow_monitoring_config import (
-    ActiveWorkflow,
+    ConfiguredWorkflow,
     ServiceLevelAgreement,
     WorkflowMonitoringConfiguration,
     validated_workspace_id,
@@ -201,6 +202,53 @@ class DashboardGenerationTests(unittest.TestCase):
                     duplicate_visualization_marker_path,
                     output_path,
                 )
+
+    def test_build_rejects_a_missing_visualization_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            visualization_path = temporary_root / "visualization.json"
+            visualization_path.write_text(
+                json.dumps(
+                    {
+                        "data": {"name": "databricks_query"},
+                        "width": "container",
+                        "height": "container",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            missing_marker_path = temporary_root / "missing-marker.json"
+            missing_marker_path.write_text(
+                json.dumps({"query": "safe SQL"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(
+                    CUSTOM_VISUALIZATION_FILES,
+                    {"{{TEST_VISUALIZATION}}": visualization_path},
+                    clear=True,
+                ),
+                self.assertRaisesRegex(ValueError, "missing custom visualization marker"),
+            ):
+                build_dashboard(missing_marker_path, temporary_root / "dashboard.json")
+
+    def test_build_keeps_the_existing_dashboard_when_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            output_path = temporary_root / "dashboard.json"
+            output_path.write_text("previous dashboard\n", encoding="utf-8")
+
+            with (
+                patch("scripts.build_dashboard.os.replace", side_effect=OSError("disk full")),
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
+                build_dashboard(SCAFFOLD_PATH, output_path)
+
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "previous dashboard\n")
+            self.assertEqual(
+                sorted(temporary_path.name for temporary_path in temporary_root.iterdir()),
+                ["dashboard.json"],
+            )
 
     def test_custom_visualizations_reject_invalid_contracts(self) -> None:
         invalid_visualization_cases = (
@@ -690,7 +738,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         changed_at = datetime(2026, 10, 29, 1, 2, 3)
         configuration = WorkflowMonitoringConfiguration(
             active_workflows=(
-                ActiveWorkflow(
+                ConfiguredWorkflow(
                     job_id=42,
                     sla=ServiceLevelAgreement(
                         frequency="daily",
@@ -726,7 +774,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         changed_at = datetime(2026, 10, 29, 1, 2, 3)
         configuration = WorkflowMonitoringConfiguration(
             active_workflows=(
-                ActiveWorkflow(
+                ConfiguredWorkflow(
                     job_id=42,
                     sla=ServiceLevelAgreement(
                         frequency="daily",
@@ -796,7 +844,7 @@ class JobsApiCollectorTests(unittest.TestCase):
         )
         configuration = WorkflowMonitoringConfiguration(
             active_workflows=(
-                ActiveWorkflow(
+                ConfiguredWorkflow(
                     job_id=42,
                     sla=ServiceLevelAgreement(
                         frequency="daily",
@@ -915,6 +963,15 @@ class JobsApiCollectorTests(unittest.TestCase):
         replace_config.assert_called_once()
         delete_expired_state.assert_called_once()
         last_successful_collection.assert_not_called()
+
+    def test_collection_clock_is_utc_without_a_zone(self) -> None:
+        collected_at = _utc_now_naive()
+
+        self.assertIsNone(collected_at.tzinfo)
+        self.assertLess(
+            abs((datetime.now(UTC).replace(tzinfo=None) - collected_at).total_seconds()),
+            5,
+        )
 
     def test_runtime_workspace_and_retention_are_scoped(self) -> None:
         self.assertEqual(validated_workspace_id("111"), "111")
@@ -1318,7 +1375,7 @@ class JobsApiCollectorTests(unittest.TestCase):
                 "load_workflow_monitoring_configuration",
                 return_value=WorkflowMonitoringConfiguration(
                     active_workflows=(
-                        ActiveWorkflow(
+                        ConfiguredWorkflow(
                             job_id=42,
                             sla=ServiceLevelAgreement(
                                 frequency="daily",
