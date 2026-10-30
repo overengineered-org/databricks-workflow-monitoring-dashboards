@@ -18,7 +18,6 @@ GUARD_JOB_NAME = "runner-guard"
 GUARD_SCRIPT = "scripts/check_workflow_runners.py"
 ALLOWED_RUNNER = "ubuntu-latest"
 
-_JOB_KEY = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+|'[^']+'|\"[^\"]+\")\s*:\s*(?P<value>.*)$")
 _ANCHOR = re.compile(r"(?:^|[\s\[{])&[A-Za-z0-9_-]+")
 _ALIAS = re.compile(r"(?:^|[\s\[{,])[*][A-Za-z_][A-Za-z0-9_-]*")
 _MERGE_KEY = re.compile(r"(?:^|\s)<<\s*:")
@@ -81,8 +80,44 @@ def _source_lines(text: str) -> list[SourceLine]:
     return lines
 
 
+@dataclass(frozen=True)
+class KeyParts:
+    key: str
+    value: str
+    quoted: bool
+    explicit: bool
+
+
+def _key_parts(text: str) -> KeyParts | None:
+    candidate = text
+    if candidate.startswith("- "):
+        candidate = candidate[2:].lstrip()
+    if candidate.startswith("?"):
+        key, _, value = candidate[1:].partition(":")
+        return KeyParts(key.strip(), value.strip(), quoted=False, explicit=True)
+    if candidate[:1] in {"'", '"'}:
+        quote = candidate[0]
+        closing = candidate.find(quote, 1)
+        if closing == -1:
+            return None
+        remainder = candidate[closing + 1 :].lstrip()
+        if not remainder.startswith(":"):
+            return None
+        return KeyParts(
+            candidate[1:closing],
+            remainder[1:].strip(),
+            quoted=True,
+            explicit=False,
+        )
+    match = re.match(r"^([A-Za-z0-9_.-]+)\s*:\s*(.*)$", candidate)
+    if match is None:
+        return None
+    return KeyParts(match.group(1), match.group(2).strip(), quoted=False, explicit=False)
+
+
 def _is_key(text: str, key: str) -> bool:
-    return text.startswith(f"{key}:")
+    parts = _key_parts(text)
+    return parts is not None and parts.key == key and not parts.quoted and not parts.explicit
 
 
 def _value_after_key(text: str) -> str:
@@ -227,41 +262,99 @@ def _check_guard_job(
     job_level: list[SourceLine],
     block: list[SourceLine],
 ) -> list[Violation]:
+    violations: list[Violation] = []
+    for line in job_level:
+        parts = _key_parts(line.text)
+        if parts is not None and parts.key in {"if", "continue-on-error"}:
+            violations.append(
+                Violation(
+                    path,
+                    line.number,
+                    "runner-guard job must not have if or continue-on-error",
+                )
+            )
     steps_line = next(
         (line for line in job_level if _is_key(line.text, "steps")),
         None,
     )
     if steps_line is None:
-        return [
+        violations.append(
             Violation(
                 path,
                 job_level[0].number if job_level else 0,
                 "runner-guard job must have exactly 2 steps",
             )
-        ]
+        )
+        return violations
     steps = _step_chunks(block, steps_line)
     if len(steps) != 2:
-        return [
+        violations.append(
             Violation(
                 path,
                 steps_line.number,
                 "runner-guard job must have exactly 2 steps: actions/checkout and "
                 f"python3 {GUARD_SCRIPT}",
             )
-        ]
-    first_step = "\n".join(line.text for line in steps[0])
-    second_step = "\n".join(line.text for line in steps[1])
-    first_is_checkout = "uses: actions/checkout@" in first_step
-    second_is_guard = f"python3 {GUARD_SCRIPT}" in second_step
-    if first_is_checkout and second_is_guard:
-        return []
-    return [
-        Violation(
-            path,
-            steps_line.number,
-            f"runner-guard job steps must be actions/checkout and python3 {GUARD_SCRIPT}",
         )
+        return violations
+    for step in steps:
+        for line in step:
+            parts = _key_parts(line.text)
+            if parts is not None and parts.key in {"if", "continue-on-error"}:
+                violations.append(
+                    Violation(
+                        path,
+                        line.number,
+                        "runner-guard step must not have if or continue-on-error",
+                    )
+                )
+    first_step = "\n".join(line.text for line in steps[0])
+    first_is_checkout = "uses: actions/checkout@" in first_step
+    expected_run = f"python3 {GUARD_SCRIPT}"
+    run_values = [
+        _unquote(parts.value)
+        for line in steps[1]
+        if (parts := _key_parts(line.text)) is not None and parts.key == "run"
     ]
+    if not first_is_checkout:
+        violations.append(
+            Violation(
+                path,
+                steps_line.number,
+                "runner-guard first step must use actions/checkout",
+            )
+        )
+    if run_values != [expected_run]:
+        violations.append(
+            Violation(
+                path,
+                steps[1][0].number,
+                f"runner-guard step run must equal: {expected_run}",
+            )
+        )
+    return violations
+
+
+def _check_job_if(
+    path: Path,
+    job_name: str,
+    job_level: list[SourceLine],
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for line in job_level:
+        parts = _key_parts(line.text)
+        if parts is None or parts.key != "if":
+            continue
+        value = parts.value
+        if any(token in value for token in ("always()", "failure()", "cancelled()")):
+            violations.append(
+                Violation(
+                    path,
+                    line.number,
+                    f"job '{job_name}' if must not use always(), failure(), or cancelled()",
+                )
+            )
+    return violations
 
 
 def _check_job(
@@ -278,20 +371,25 @@ def _check_job(
         ]
     direct_children = [line for line in job_level if line.indent == child_indent]
 
+    violations: list[Violation] = []
+    if job_name != GUARD_JOB_NAME:
+        violations.extend(_check_job_if(path, job_name, direct_children))
+
     reusable_workflow = next(
         (line for line in direct_children if _is_key(line.text, "uses")),
         None,
     )
     if reusable_workflow is not None:
-        return [
+        violations.append(
             Violation(
                 path,
                 reusable_workflow.number,
                 f"job '{job_name}' uses a reusable workflow",
             )
-        ]
+        )
+        return violations
 
-    violations = _check_runs_on(path, job_name, direct_children)
+    violations.extend(_check_runs_on(path, job_name, direct_children))
     violations.extend(_check_needs(path, job_name, direct_children, block))
     if job_name == GUARD_JOB_NAME:
         violations.extend(_check_guard_job(path, direct_children, block))
@@ -302,22 +400,34 @@ def check_workflow_file(path: Path) -> list[Violation]:
     lines = _source_lines(path.read_text(encoding="utf-8"))
     violations = _check_yaml_features(path, lines)
 
-    jobs_index = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if line.indent == 0 and _is_key(line.text, "jobs")
-        ),
-        None,
-    )
-    if jobs_index is None:
+    jobs_keys = [
+        line
+        for line in lines
+        if line.indent == 0 and (parts := _key_parts(line.text)) is not None and parts.key == "jobs"
+    ]
+    if len(jobs_keys) != 1 or jobs_keys[0].text != "jobs:":
+        line_number = jobs_keys[0].number if jobs_keys else 1
+        violations.append(Violation(path, line_number, "jobs must be a block mapping"))
         return violations
 
+    jobs_line = jobs_keys[0]
+    jobs_index = lines.index(jobs_line)
     section_end = len(lines)
     for index in range(jobs_index + 1, len(lines)):
-        if lines[index].indent <= lines[jobs_index].indent:
+        if lines[index].indent <= jobs_line.indent:
             section_end = index
             break
+
+    for line in lines[jobs_index + 1 : section_end]:
+        parts = _key_parts(line.text)
+        if parts is None or not (parts.quoted or parts.explicit):
+            continue
+        reason = (
+            "quoted key is forbidden under jobs"
+            if parts.quoted
+            else "explicit key is forbidden under jobs"
+        )
+        violations.append(Violation(path, line.number, reason))
 
     job_start = jobs_index + 1
     if job_start >= section_end:
@@ -330,11 +440,24 @@ def check_workflow_file(path: Path) -> list[Violation]:
         if line.indent != job_indent or line.text.startswith("- "):
             position += 1
             continue
-        match = _JOB_KEY.match(line.text)
-        if match is None:
+        parts = _key_parts(line.text)
+        if parts is None:
             position += 1
             continue
-        job_name = _unquote(match.group("name"))
+        if parts.quoted or parts.explicit:
+            position += 1
+            continue
+        if parts.value:
+            violations.append(
+                Violation(
+                    path,
+                    line.number,
+                    f"job key '{parts.key}' must not have an inline value",
+                )
+            )
+            position += 1
+            continue
+        job_name = parts.key
         block_end = _job_block_end(lines, position + 1, section_end, job_indent)
         violations.extend(_check_job(path, job_name, line, lines[position + 1 : block_end]))
         position = block_end

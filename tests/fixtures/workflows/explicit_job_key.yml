@@ -1,0 +1,10 @@
+name: Explicit job key
+on: push
+jobs:
+  runner-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 scripts/check_workflow_runners.py
+  ? evil
+  : {needs: runner-guard, runs-on: macos-latest, steps: [{run: echo evil}]}

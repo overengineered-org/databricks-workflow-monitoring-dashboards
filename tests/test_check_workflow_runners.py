@@ -23,7 +23,23 @@ RULE_FIXTURES = {
     "yaml_alias.yml": "YAML anchor is forbidden",
     "missing_needs.yml": "has no needs: runner-guard",
     "runner_guard_extra_step.yml": "exactly 2 steps",
+    "flow_style_jobs.yml": "jobs must be a block mapping",
+    "quoted_jobs_key.yml": "jobs must be a block mapping",
+    "inline_job_value.yml": "job key 'evil' must not have an inline value",
+    "quoted_job_key.yml": "quoted key is forbidden under jobs",
+    "explicit_job_key.yml": "explicit key is forbidden under jobs",
+    "guard_run_substring.yml": "runner-guard step run must equal",
+    "guard_continue_on_error.yml": "runner-guard job must not have if or continue-on-error",
+    "guard_step_if.yml": "runner-guard step must not have if or continue-on-error",
+    "later_job_always.yml": "must not use always(), failure(), or cancelled()",
 }
+
+
+def _workflow_paths(directory: Path) -> list[Path]:
+    paths: list[Path] = []
+    for pattern in ("*.yml", "*.yaml"):
+        paths.extend(directory.glob(pattern))
+    return sorted(paths)
 
 
 def _workflow_jobs(path: Path) -> dict[str, dict[str, object]]:
@@ -51,10 +67,29 @@ class RunnerGuardFixtureTests(unittest.TestCase):
                 for violation in violations:
                     self.assertIn(f"{fixture_name}:", str(violation))
 
+    def test_pyyaml_cross_check_applies_to_every_fixture(self) -> None:
+        for path in _workflow_paths(FIXTURE_DIRECTORY):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            jobs = document.get("jobs") if isinstance(document, dict) else None
+            if not isinstance(jobs, dict):
+                continue
+            non_ubuntu_jobs = {
+                job_name
+                for job_name, job in jobs.items()
+                if isinstance(job, dict) and job.get("runs-on") != "ubuntu-latest"
+            }
+            if not non_ubuntu_jobs:
+                continue
+            with self.subTest(fixture=path.name):
+                self.assertTrue(
+                    check_workflow_file(path),
+                    f"{path.name} has non-ubuntu jobs {sorted(non_ubuntu_jobs)} but the guard passed",
+                )
+
 
 class RepositoryWorkflowTests(unittest.TestCase):
     def test_real_workflow_files_pass(self) -> None:
-        paths = sorted(WORKFLOW_DIRECTORY.glob("*.yml"))
+        paths = _workflow_paths(WORKFLOW_DIRECTORY)
         self.assertEqual(
             {path.name for path in paths},
             {"runner-guard.yml", "validate.yml"},
@@ -62,7 +97,7 @@ class RepositoryWorkflowTests(unittest.TestCase):
         self.assertEqual(check_workflows(WORKFLOW_DIRECTORY), [])
 
     def test_pyyaml_cross_check_finds_the_same_runner_rule(self) -> None:
-        for path in sorted(WORKFLOW_DIRECTORY.glob("*.yml")):
+        for path in _workflow_paths(WORKFLOW_DIRECTORY):
             with self.subTest(workflow=path.name):
                 for job_name, job in _workflow_jobs(path).items():
                     self.assertEqual(

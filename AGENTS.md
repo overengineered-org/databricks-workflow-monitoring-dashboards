@@ -73,7 +73,7 @@ Cost guardrails are rules:
 
 - Every job uses exactly `runs-on: ubuntu-latest`. Never use a larger runner, a runner group,
   labels, macOS, Windows, a GPU runner, or a self-hosted runner.
-- Every job sets `timeout-minutes: 15` and `permissions: contents: read`.
+- Every workflow sets `permissions: contents: read`, and every job sets `timeout-minutes: 15`.
 - Use `concurrency` with `cancel-in-progress: true`.
 - Never use secrets or `pull_request_target`.
 - Never upload artifacts.
