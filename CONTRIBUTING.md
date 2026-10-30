@@ -62,21 +62,22 @@ warehouse IDs, or organization-specific Job details.
 | --- | --- |
 | Public YAML format | `src/workflow-monitoring.schema.json` |
 | Configuration CLI | `cmd/workflow-monitoring/` |
-| Validation or generation | `workflow_monitoring_dashboard.py` |
+| Dashboard build | `scripts/build_dashboard.py` |
 | Jobs API collector | `src/collect_workflow_monitoring_jobs_api.py` |
+| Collector Job | `resources/workflow-monitoring.collector.job.yml` |
 | Bundle resources | `databricks.yml` or `resources/` |
 | Dashboard | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 
-Never edit the generated dashboard or collector Job directly. Maintainers change the dashboard
-scaffold or a Vega-Lite file, then run:
+Never edit the built dashboard directly. The collector Job is a normal bundle file. Maintainers
+change the dashboard scaffold or a Vega-Lite file, then run:
 
 ```sh
-uv run python workflow_monitoring_dashboard.py generate
+uv run python scripts/build_dashboard.py
 ```
 
-Commit the generated dashboard and collector Job resource.
+Commit the built dashboard.
 
 User-facing behavior belongs in the README:
 
@@ -84,8 +85,8 @@ User-facing behavior belongs in the README:
 - [SLA schedules](README.md#choose-an-sla-schedule)
 - [Production requirements](README.md#before-production)
 
-Tracked configuration and generated files must contain fake values only. When dependencies
-change, run `uv lock` and commit `pyproject.toml` with `uv.lock`.
+Tracked configuration and built files must contain fake values only. When dependencies change,
+run `uv lock` and commit `pyproject.toml` with `uv.lock`.
 
 ## 3. Validate
 
@@ -96,7 +97,6 @@ uv run ruff format --check .
 uv run ruff check .
 uv run python -m unittest discover -s tests -v
 go test ./...
-uv run python workflow_monitoring_dashboard.py validate
 ```
 
 Before opening a pull request, run the required local gate:
@@ -124,7 +124,7 @@ Include:
 Use a conventional commit subject of 50 characters or fewer. Pull requests are squash-merged
 after approval.
 
-Before review, confirm names are clear, tests cover important failures, generated files are
-current, tracked values are fake, and documentation matches behavior.
+Before review, confirm names are clear, tests cover important failures, built files are current,
+tracked values are fake, and documentation matches behavior.
 
 Publishing a version is separate. Maintainers use the [release guide](RELEASING.md).

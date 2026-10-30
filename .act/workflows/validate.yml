@@ -37,22 +37,16 @@ jobs:
             --job-id 42 \
             --status active \
             --completion-time 06:00
-          uv run python workflow_monitoring_dashboard.py validate \
-            --config /tmp/workflow-monitoring.yml
-      - name: Validate configuration
-        run: uv run python workflow_monitoring_dashboard.py validate
-      - name: Snapshot generated deployment files
+          # #24 deletes this step together with the Go CLI.
+          uv run python -c "from pathlib import Path; from src.workflow_monitoring_config import load_workflow_monitoring_configuration as load; load(Path('/tmp/workflow-monitoring.yml'), Path('src/workflow-monitoring.schema.json'))"
+      - name: Snapshot built dashboard
+        run: cp src/dashboards/workflow-monitoring.lvdash.json /tmp/workflow-monitoring.lvdash.json
+      - name: Build dashboard
+        # The build must be current, so the tracked scaffold and Vega files match the dashboard.
         run: |
-          cp src/dashboards/workflow-monitoring.lvdash.json /tmp/workflow-monitoring.lvdash.json
-          cp resources/workflow-monitoring.jobs-api.job.yml /tmp/workflow-monitoring.jobs-api.job.yml
-      - name: Generate dashboard
-        # Generation proves that the tracked fake configuration stays deployable.
-        run: |
-          uv run python workflow_monitoring_dashboard.py generate
-      - name: Check generated deployment files
-        run: |
-          cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json
-          cmp /tmp/workflow-monitoring.jobs-api.job.yml resources/workflow-monitoring.jobs-api.job.yml
+          uv run python scripts/build_dashboard.py
+      - name: Check built dashboard
+        run: cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json
       - name: Validate dashboard JSON
         run: jq empty src/dashboards/workflow-monitoring.lvdash.json
       - name: Check banned em dash

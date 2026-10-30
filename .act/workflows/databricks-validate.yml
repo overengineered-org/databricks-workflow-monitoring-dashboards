@@ -27,8 +27,8 @@ jobs:
         run: uv lock --check
       - name: Install committed Python environment
         run: uv sync --locked
-      - name: Generate dashboard
-        run: uv run python workflow_monitoring_dashboard.py generate
+      - name: Build dashboard
+        run: uv run python scripts/build_dashboard.py
       - name: Validate SQL datasets
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
