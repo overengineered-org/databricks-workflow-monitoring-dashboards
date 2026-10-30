@@ -206,6 +206,10 @@ identities, and notebook output are outside this dashboard's scope.
 
 Collector errors are stored in `workflow_job_api_state` with bounded error text.
 
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before you change the repository.
+
 ## Documentation map
 
 | Goal | Read |
