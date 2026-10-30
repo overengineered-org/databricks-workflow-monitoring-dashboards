@@ -29,9 +29,16 @@ RULE_FIXTURES = {
     "quoted_job_key.yml": "quoted key is forbidden under jobs",
     "explicit_job_key.yml": "explicit key is forbidden under jobs",
     "guard_run_substring.yml": "runner-guard step run must equal",
-    "guard_continue_on_error.yml": "runner-guard job must not have if or continue-on-error",
-    "guard_step_if.yml": "runner-guard step must not have if or continue-on-error",
-    "later_job_always.yml": "must not use always(), failure(), or cancelled()",
+    "guard_continue_on_error.yml": "runner-guard job key 'continue-on-error' is not allowed",
+    "guard_step_if.yml": "runner-guard step 2 key 'if' is not allowed",
+    "later_job_always.yml": "job 'validate' must not have if",
+    "notsuccess.yml": "job 'validate' must not have if",
+    "blockif.yml": "job 'validate' must not have if",
+    "checkoutref.yml": "runner-guard step 1 key 'with' is not allowed",
+    "shell.yml": "runner-guard step 2 key 'shell' is not allowed",
+    "bashenv.yml": "workflow key 'env' is not allowed",
+    "defaults.yml": "runner-guard job key 'defaults' is not allowed",
+    "workflow_defaults.yml": "workflow key 'defaults' is not allowed",
 }
 
 

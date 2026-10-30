@@ -3,6 +3,9 @@
 
 The check uses only the Python standard library. It reads YAML as text so it can
 report a line number for each violation and run before any setup action.
+
+A text check cannot stop a person who edits this script and its workflow in the
+same pull request. The GitHub Free plan with no payment method covers that case.
 """
 
 from __future__ import annotations
@@ -263,14 +266,17 @@ def _check_guard_job(
     block: list[SourceLine],
 ) -> list[Violation]:
     violations: list[Violation] = []
+    allowed_job_keys = {"runs-on", "timeout-minutes", "steps", "name"}
     for line in job_level:
         parts = _key_parts(line.text)
-        if parts is not None and parts.key in {"if", "continue-on-error"}:
+        if parts is None:
+            continue
+        if parts.key not in allowed_job_keys:
             violations.append(
                 Violation(
                     path,
                     line.number,
-                    "runner-guard job must not have if or continue-on-error",
+                    f"runner-guard job key '{parts.key}' is not allowed",
                 )
             )
     steps_line = next(
@@ -297,15 +303,21 @@ def _check_guard_job(
             )
         )
         return violations
-    for step in steps:
+    allowed_step_keys = ({"uses", "name"}, {"run", "name"})
+    for step_number, (step, allowed_keys) in enumerate(
+        zip(steps, allowed_step_keys, strict=True),
+        start=1,
+    ):
         for line in step:
             parts = _key_parts(line.text)
-            if parts is not None and parts.key in {"if", "continue-on-error"}:
+            if parts is None:
+                continue
+            if parts.key not in allowed_keys:
                 violations.append(
                     Violation(
                         path,
                         line.number,
-                        "runner-guard step must not have if or continue-on-error",
+                        f"runner-guard step {step_number} key '{parts.key}' is not allowed",
                     )
                 )
     first_step = "\n".join(line.text for line in steps[0])
@@ -335,28 +347,6 @@ def _check_guard_job(
     return violations
 
 
-def _check_job_if(
-    path: Path,
-    job_name: str,
-    job_level: list[SourceLine],
-) -> list[Violation]:
-    violations: list[Violation] = []
-    for line in job_level:
-        parts = _key_parts(line.text)
-        if parts is None or parts.key != "if":
-            continue
-        value = parts.value
-        if any(token in value for token in ("always()", "failure()", "cancelled()")):
-            violations.append(
-                Violation(
-                    path,
-                    line.number,
-                    f"job '{job_name}' if must not use always(), failure(), or cancelled()",
-                )
-            )
-    return violations
-
-
 def _check_job(
     path: Path,
     job_name: str,
@@ -373,7 +363,12 @@ def _check_job(
 
     violations: list[Violation] = []
     if job_name != GUARD_JOB_NAME:
-        violations.extend(_check_job_if(path, job_name, direct_children))
+        for line in direct_children:
+            parts = _key_parts(line.text)
+            if parts is not None and parts.key == "if":
+                violations.append(
+                    Violation(path, line.number, f"job '{job_name}' must not have if")
+                )
 
     reusable_workflow = next(
         (line for line in direct_children if _is_key(line.text, "uses")),
@@ -399,6 +394,15 @@ def _check_job(
 def check_workflow_file(path: Path) -> list[Violation]:
     lines = _source_lines(path.read_text(encoding="utf-8"))
     violations = _check_yaml_features(path, lines)
+
+    for line in lines:
+        if line.indent != 0:
+            continue
+        parts = _key_parts(line.text)
+        if parts is not None and parts.key in {"env", "defaults"}:
+            violations.append(
+                Violation(path, line.number, f"workflow key '{parts.key}' is not allowed")
+            )
 
     jobs_keys = [
         line
