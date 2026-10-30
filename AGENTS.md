@@ -13,6 +13,7 @@ These rules are mandatory for repository work.
 - Start from current `origin/main` in a fresh worktree when possible.
 - Use a clear `feat/`, `fix/`, `chore/`, or `docs/` branch name.
 - Keep ownership explicit. Stage explicit paths and preserve unrelated changes.
+- Sign off every commit with `git commit -s` (Developer Certificate of Origin, #38).
 
 ### Pull requests
 
