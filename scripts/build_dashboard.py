@@ -6,15 +6,22 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SCAFFOLD_PATH = Path("src/dashboards/workflow-monitoring.scaffold.lvdash.json")
-DEFAULT_DASHBOARD_PATH = Path("src/dashboards/workflow-monitoring.lvdash.json")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
+DEFAULT_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
 CUSTOM_VISUALIZATION_FILES = {
-    "{{SLA_DELIVERY_CALENDAR_VEGA}}": Path("src/visualizations/sla-delivery-calendar.vega.json"),
-    "{{DELIVERY_MARGIN_TIMELINE_VEGA}}": Path(
-        "src/visualizations/delivery-margin-timeline.vega.json"
+    "{{SLA_DELIVERY_CALENDAR_VEGA}}": (
+        REPOSITORY_ROOT / "src/visualizations/sla-delivery-calendar.vega.json"
     ),
-    "{{WORKFLOW_RISK_MAP_VEGA}}": Path("src/visualizations/workflow-risk-map.vega.json"),
-    "{{RUN_DURATION_LANES_VEGA}}": Path("src/visualizations/run-duration-lanes.vega.json"),
+    "{{DELIVERY_MARGIN_TIMELINE_VEGA}}": (
+        REPOSITORY_ROOT / "src/visualizations/delivery-margin-timeline.vega.json"
+    ),
+    "{{WORKFLOW_RISK_MAP_VEGA}}": (
+        REPOSITORY_ROOT / "src/visualizations/workflow-risk-map.vega.json"
+    ),
+    "{{RUN_DURATION_LANES_VEGA}}": (
+        REPOSITORY_ROOT / "src/visualizations/run-duration-lanes.vega.json"
+    ),
 }
 
 

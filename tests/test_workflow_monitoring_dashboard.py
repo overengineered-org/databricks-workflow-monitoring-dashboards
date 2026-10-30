@@ -111,6 +111,21 @@ class DashboardGenerationTests(unittest.TestCase):
 
             self.assertEqual(first_output.read_bytes(), second_output.read_bytes())
 
+    def test_build_script_runs_from_the_scripts_directory(self) -> None:
+        dashboard_bytes = GENERATED_DASHBOARD_PATH.read_bytes()
+        try:
+            build_process = subprocess.run(
+                [sys.executable, "build_dashboard.py"],
+                cwd=REPOSITORY_ROOT / "scripts",
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            GENERATED_DASHBOARD_PATH.write_bytes(dashboard_bytes)
+
+        self.assertEqual(build_process.returncode, 0, build_process.stderr)
+
     def test_built_dashboard_reads_config_table_and_has_no_markers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "dashboard.json"

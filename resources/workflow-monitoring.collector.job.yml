@@ -37,7 +37,7 @@ resources:
         timeout_seconds: 240
         max_retries: 2
         min_retry_interval_millis: 30000
-      - task_key: refresh_monitoring_dashboard
+      - task_key: refresh_workflow_monitoring_dashboard
         depends_on:
         - task_key: collect_jobs_api_state
         run_if: ALL_DONE
