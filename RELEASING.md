@@ -50,8 +50,8 @@ The script creates the tag and immutable GitHub Release, then verifies the publi
 
 ## 5. Test the published tag
 
-The pinned CLI can ask for credentials during `bundle init`. Fake offline values keep the render
-offline, as `tests/test_bundle_template.py` uses:
+The pinned CLI can ask for credentials during `bundle init`. Fake values keep the render offline.
+The same values are used in `tests/test_bundle_template.py`:
 
 ```sh
 DATABRICKS_HOST=https://example.invalid DATABRICKS_TOKEN=fake \

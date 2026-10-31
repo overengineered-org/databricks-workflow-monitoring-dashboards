@@ -133,11 +133,12 @@ selected workspace. The dashboard shows data after the first collector run.
 Edit `workflow-monitoring.yml`. Keep Job IDs unique and valid for the selected SLA schedule.
 Set `monitoring_status` to `inactive` to exclude a Job without deleting its configuration.
 
-Run `databricks bundle deploy` to publish the change. The next scheduled collector run applies
-it. The collector Job runs every 5 minutes on the `0 0/5 * * * ?` schedule in UTC, set in
-`resources/workflow-monitoring.collector.job.yml.tmpl`. To apply the change now, run
-`databricks bundle run workflow_monitoring_jobs_api_collector` as in
-[step 5](#5-deploy-and-load-the-first-data).
+Run `databricks bundle deploy` to publish the change. In the prod target, the next scheduled
+collector run applies it. The collector Job runs every 5 minutes on the `0 0/5 * * * ?` schedule
+in UTC, set in `resources/workflow-monitoring.collector.job.yml`. In the dev target, the bundle
+uses `mode: development`, so the schedule is paused and no scheduled run applies the change. In
+dev, run `databricks bundle run workflow_monitoring_jobs_api_collector` as in
+[step 5](#5-deploy-and-load-the-first-data) to apply the change now.
 
 ## Config errors
 
@@ -216,8 +217,9 @@ Collector errors are stored in `workflow_job_api_state` with bounded error text.
 ### Remove data from an old workspace
 
 The collector retention delete only removes rows of the current workspace. It uses
-`WHERE workspace_id = '<current>'` in `src/collect_workflow_monitoring_jobs_api.py`. Rows from
-an old workspace stay forever.
+`WHERE workspace_id = '<current>'` in the collector at
+`workflow_monitoring/collector/collect_workflow_monitoring_jobs_api.py`.
+Rows from an old workspace stay forever.
 
 Get the old workspace ID, then run one delete per table in your SQL editor:
 
