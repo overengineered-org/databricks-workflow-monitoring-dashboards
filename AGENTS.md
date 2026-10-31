@@ -18,6 +18,8 @@ These rules are mandatory for repository work.
 ### Pull requests
 
 - Push a branch and open a pull request for normal work.
+- Do not merge a Dependabot pull request without maintainer approval. Treat it like any other
+  pull request.
 - Do not push to `main` without explicit approval in the current request.
 - Before merging, recheck the head, reviews, threads, checks, `origin/main`, and mergeability.
 - Treat merge, deploy, and production writes as separate approvals.
