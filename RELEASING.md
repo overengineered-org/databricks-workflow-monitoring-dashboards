@@ -47,4 +47,4 @@ The script creates the tag and immutable GitHub Release, then verifies the publi
 - Act and Gitleaks pass.
 - The published tag points to the validated commit.
 
-This repository does not use semantic-release or GitHub-hosted workflows.
+Releases are published by `scripts/release.sh`. No workflow publishes a release.
