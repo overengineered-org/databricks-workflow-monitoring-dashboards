@@ -1,6 +1,6 @@
 # Databricks Workflow Monitoring Dashboards
 
-An open-source monitoring solution for selected Databricks
+A deployable Databricks bundle that monitors selected Databricks
 [Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor). It polls the Jobs API every
 five minutes and presents current health, failures, run duration, and configured service-level
 agreement (SLA) performance in a single AI/BI dashboard.
@@ -93,15 +93,18 @@ bundle variables. Keep `create_catalog_and_schema_if_missing` set to `false` so 
 never runs `CREATE CATALOG` or `CREATE SCHEMA`. Both modes create the three collector tables when
 missing.
 
-### 4. Validate the configuration
+### 4. Validate the bundle
 
 ```sh
 databricks bundle validate --strict -t dev --profile <profile> \
   --var="warehouse_id=<warehouse-id>"
 ```
 
-Configuration errors appear in the collector Job run output. Do not edit the built dashboard
-directly. Maintainers rebuild it after scaffold changes. See
+This command checks the bundle files. It does not read `workflow-monitoring.yml`. The collector
+Job run checks that file and lists every error. The `yaml-language-server` schema comment at the
+top of `workflow-monitoring.yml` gives editor checks while you type.
+
+Do not edit the built dashboard directly. Maintainers rebuild it after scaffold changes. See
 [Contributing](CONTRIBUTING.md#2-edit-the-owning-source).
 
 ### 5. Deploy and load the first data
@@ -130,7 +133,32 @@ selected workspace. The dashboard shows data after the first collector run.
 Edit `workflow-monitoring.yml`. Keep Job IDs unique and valid for the selected SLA schedule.
 Set `monitoring_status` to `inactive` to exclude a Job without deleting its configuration.
 
-After a configuration change, repeat [step 5](#5-deploy-and-load-the-first-data).
+Run `databricks bundle deploy` to publish the change. The next scheduled collector run applies
+it. The collector Job runs every 5 minutes on the `0 0/5 * * * ?` schedule in UTC, set in
+`resources/workflow-monitoring.collector.job.yml.tmpl`. To apply the change now, run
+`databricks bundle run workflow_monitoring_jobs_api_collector` as in
+[step 5](#5-deploy-and-load-the-first-data).
+
+## Config errors
+
+The collector reads `workflow-monitoring.yml` before it writes any table. A bad file fails the
+run. The run output lists every error with its path, for example
+`workflows[0].sla.day_of_week: not allowed when frequency is daily`. Errors come as one list,
+not one at a time.
+
+Open the collector Job run output in the workspace to read the errors.
+
+The tables do not change on a failed load. The collector reads the config file first, and it
+creates no table and writes no row when the read fails. `workflow_sla_config` keeps the rows of
+the last good run. The dashboard reads those rows, so it keeps the last good configuration.
+
+## Upgrade
+
+Product files live in `workflow_monitoring/` and are product-owned. To upgrade, render the new
+release tag into a temporary folder, replace your `workflow_monitoring/` folder, apply the
+listed user-owned file changes, then run `databricks bundle deploy`.
+
+The steps are in `workflow_monitoring/README.md` in your rendered project.
 
 ## Choose an SLA schedule
 
@@ -179,11 +207,27 @@ identities, and notebook output are outside this dashboard's scope.
 
 | Problem | Fix |
 | --- | --- |
-| Configuration invalid | Edit `workflow-monitoring.yml`, then run `databricks bundle validate`. |
+| Configuration invalid | Open the collector Job run output, fix the listed errors, then redeploy. |
 | Storage creation denied | Grant namespace rights or use an existing catalog and schema. |
 | Dashboard data stale | Check the collector schedule, latest run, and run identity. |
 
 Collector errors are stored in `workflow_job_api_state` with bounded error text.
+
+### Remove data from an old workspace
+
+The collector retention delete only removes rows of the current workspace. It uses
+`WHERE workspace_id = '<current>'` in `src/collect_workflow_monitoring_jobs_api.py`. Rows from
+an old workspace stay forever.
+
+Get the old workspace ID, then run one delete per table in your SQL editor:
+
+```sql
+DELETE FROM <catalog>.<schema>.workflow_run_api_state WHERE workspace_id = '<old-workspace-id>';
+DELETE FROM <catalog>.<schema>.workflow_job_api_state WHERE workspace_id = '<old-workspace-id>';
+DELETE FROM <catalog>.<schema>.workflow_sla_config WHERE workspace_id = '<old-workspace-id>';
+```
+
+This deletes data permanently. Run it only for a workspace you no longer monitor.
 
 ## Contributing
 
