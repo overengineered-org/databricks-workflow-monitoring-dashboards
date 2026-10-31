@@ -9,7 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+from tests._paths import REPOSITORY_ROOT
+
 SCRIPT = REPOSITORY_ROOT / "scripts" / "check_dco.py"
 AUTHOR_EMAIL = "author@example.com"
 BOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com"

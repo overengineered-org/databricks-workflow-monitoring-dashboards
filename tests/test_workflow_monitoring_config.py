@@ -11,14 +11,16 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from src.workflow_monitoring_config import (
+from tests._paths import REPOSITORY_ROOT
+
+# isort: split
+from workflow_monitoring_config import (
     CONFIGURATION_VERSION_2_MESSAGE,
     _validate_schedule_fields,
     load_workflow_monitoring_configuration,
     workflow_sla_config_rows,
 )
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPOSITORY_ROOT / "src/workflow-monitoring.schema.json"
 
 
