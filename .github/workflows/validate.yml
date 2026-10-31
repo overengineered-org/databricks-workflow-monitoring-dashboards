@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check workflow runners
         run: python3 scripts/check_workflow_runners.py
 
@@ -36,17 +36,17 @@ jobs:
       UV_CACHE_DIR: /tmp/workflow-monitoring-act-uv-cache
       UV_PROJECT_ENVIRONMENT: /tmp/workflow-monitoring-act-venv
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install uv
         if: ${{ !env.ACT }}
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.12.2"
+          version: "0.13.5"
       - name: Install Databricks CLI
         if: ${{ !env.ACT }}
-        uses: databricks/setup-cli@6bb7075f85b326f8b9ce160933dfe9bcd63c8121 # v1.13.0
+        uses: databricks/setup-cli@8de769ec2543ee05e456ee2121350efc7efc4bda # v1.22.1
         with:
-          version: "1.13.0"
+          version: "1.22.1"
       - name: Verify committed Python lockfile
         run: uv lock --check
       - name: Install committed Python environment

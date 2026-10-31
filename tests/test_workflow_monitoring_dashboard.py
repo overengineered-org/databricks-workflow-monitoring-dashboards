@@ -1733,7 +1733,7 @@ class RepositoryContractTests(unittest.TestCase):
         bundle_configuration = yaml.safe_load(TEMPLATE_DATABRICKS_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
             bundle_configuration["bundle"]["databricks_cli_version"],
-            ">= 1.13.0",
+            ">= 1.22.1",
         )
         self.assertNotIn("presets", bundle_configuration["targets"]["dev"])
         self.assertEqual(
@@ -1742,7 +1742,7 @@ class RepositoryContractTests(unittest.TestCase):
         )
 
         act_dockerfile = (REPOSITORY_ROOT / ".act/Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("databricks/setup-cli/v1.13.0/install.sh", act_dockerfile)
+        self.assertIn("databricks/setup-cli/v1.22.1/install.sh", act_dockerfile)
 
         release_notes_configuration = yaml.safe_load(
             (REPOSITORY_ROOT / ".github/release.yml").read_text(encoding="utf-8")
