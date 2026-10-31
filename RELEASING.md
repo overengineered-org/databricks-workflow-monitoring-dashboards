@@ -15,12 +15,20 @@ A release takes about 10 minutes with warm validation caches. Publishing needs s
 
 Before `1.0.0`, an incompatible change normally increments the minor version.
 
+A change to the config format or to a user-owned template file is "Incompatible public
+configuration". The user-owned template files are `databricks.yml.tmpl`,
+`workflow-monitoring.yml.tmpl`, and `resources/*.yml.tmpl`. Give that pull request the
+`upgrade-steps` label and an "Upgrade steps" section in its body. The label sorts the entry into
+the "Upgrade steps" release notes section.
+
 ## 2. Merge the version change
 
 1. Update `project.version` in `pyproject.toml`.
 2. Run `uv lock` so `uv.lock` has the same version.
-3. Merge the approved pull request with squash.
-4. Use a clean `main` checkout matching `origin/main`.
+3. Run `uv run python scripts/build_template.py` so `VERSION` and the template copy match.
+4. Update the README `--tag` and the schema URL tag to `v<version>`.
+5. Merge the approved pull request with squash.
+6. Use a clean `main` checkout matching `origin/main`.
 
 ## 3. Check without publishing
 
@@ -30,7 +38,7 @@ Replace `<version>` with the version from `pyproject.toml`:
 ./scripts/release.sh --check v<version>
 ```
 
-This validates the exact commit and builds temporary archives. It creates no tag or release.
+This validates the exact commit. It creates no tag or release.
 
 ## 4. Publish after approval
 
@@ -40,11 +48,23 @@ This validates the exact commit and builds temporary archives. It creates no tag
 
 The script creates the tag and immutable GitHub Release, then verifies the published commit.
 
+## 5. Test the published tag
+
+```sh
+databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
+  --tag v<version> --template-dir template --output-dir /tmp/check
+```
+
+This proves that the remote template renders from the pushed tag. The local check in section 3
+proves that only the local checkout renders.
+
 ## What the release script proves
 
-- The SemVer tag matches `pyproject.toml`.
-- Local `main` exactly matches `origin/main`.
-- Act and Gitleaks pass.
+- The tag matches `project.version` in `pyproject.toml`.
+- The local gate passes, so `VERSION`, the rendered template copy, and the docs tags match that
+  version.
+- Local `main` exactly matches `origin/main`, and the tree is clean.
+- Gitleaks finds no secret in the history.
 - The published tag points to the validated commit.
 
 Releases are published by `scripts/release.sh`. No workflow publishes a release.
