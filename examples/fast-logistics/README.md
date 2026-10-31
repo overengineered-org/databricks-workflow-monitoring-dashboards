@@ -46,13 +46,13 @@ Return to the repository root. Repeat the add command from
 [README step 3](../../README.md#3-create-the-configuration) for each Job ID from the bundle
 summary. Job names come from the Jobs API.
 
-Run [README steps 4 and 5](../../README.md#4-validate-the-configuration) to validate, deploy, and
+Run [README steps 4 and 5](../../README.md#4-validate-the-bundle) to validate, deploy, and
 load the dashboard.
 
 ## 4. Remove the example
 
 If you added the Jobs to monitoring, remove each Job entry from `workflow-monitoring.yml`.
-Repeat [README steps 4 and 5](../../README.md#4-validate-the-configuration). Then remove the
+Repeat [README steps 4 and 5](../../README.md#4-validate-the-bundle). Then remove the
 four disposable Jobs:
 
 ```sh

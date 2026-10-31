@@ -25,7 +25,9 @@ The Codex project environment is defined in `.codex/environments/environment.tom
 `uv sync --locked` when Codex creates a worktree and exposes Bootstrap, Smoke checks, and Full
 local gate actions. The full gate uses the same wrapper as section 3.
 
-The local checks need the Python and `uv` versions in [README step 1](README.md#1-create-the-project).
+The local checks need the Python version in `requires-python` in `pyproject.toml` and the
+`uv` version pinned in `.act/Dockerfile`.
+`uv` and Python are contributor tools only. Users need only the Databricks CLI.
 The required local Act gate also needs Git, `act`, and a running Docker
 daemon. Start Docker Desktop on macOS or the Docker daemon on Linux before running the gate.
 The Act image supplies `jq` and the pinned Databricks CLI; they are not host
@@ -86,7 +88,6 @@ Keep the bundle resource key `workflow_monitoring` and the Job task keys stable.
 
 User-facing behavior belongs in the README:
 
-- [Storage modes](README.md#3-create-the-configuration)
 - [SLA schedules](README.md#choose-an-sla-schedule)
 - [Production requirements](README.md#before-production)
 

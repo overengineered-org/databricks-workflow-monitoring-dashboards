@@ -16,7 +16,7 @@ A release takes about 10 minutes with warm validation caches. Publishing needs s
 Before `1.0.0`, an incompatible change normally increments the minor version.
 
 A change to the config format or to a user-owned template file is "Incompatible public
-configuration". The user-owned template files are `databricks.yml.tmpl`,
+configuration". The user-owned template files are `.gitignore`, `databricks.yml.tmpl`,
 `workflow-monitoring.yml.tmpl`, and `resources/*.yml.tmpl`. Give that pull request the
 `upgrade-steps` label and an "Upgrade steps" section in its body. The label sorts the entry into
 the "Upgrade steps" release notes section.
@@ -50,7 +50,11 @@ The script creates the tag and immutable GitHub Release, then verifies the publi
 
 ## 5. Test the published tag
 
+The pinned CLI can ask for credentials during `bundle init`. Fake values keep the render offline.
+The same values are used in `tests/test_bundle_template.py`:
+
 ```sh
+DATABRICKS_HOST=https://example.invalid DATABRICKS_TOKEN=fake \
 databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
   --tag v<version> --template-dir template --output-dir /tmp/check
 ```
