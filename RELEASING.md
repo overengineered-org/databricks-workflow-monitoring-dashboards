@@ -1,9 +1,10 @@
 # Releasing
 
-Use this maintainer guide after the pull request is approved. Complete the required local gate in
+Use this maintainer guide for a version bump. Complete the required local gate in
 [CONTRIBUTING.md](CONTRIBUTING.md#3-validate) before merging.
 
-A release takes about 10 minutes with warm validation caches. Publishing needs separate approval.
+The version-bump pull request is the release. The merge to `main` publishes the tag and the
+GitHub Release.
 
 ## 1. Choose the version
 
@@ -27,7 +28,7 @@ the "Upgrade steps" release notes section.
 2. Run `uv lock` so `uv.lock` has the same version.
 3. Run `uv run python scripts/build_template.py` so `VERSION` and the template copy match.
 4. Update the README `--tag` and the schema URL tag to `v<version>`.
-5. Merge the approved pull request with squash.
+5. Merge the approved pull request with squash. The merge publishes `v<version>`.
 6. Use a clean `main` checkout matching `origin/main`.
 
 ## 3. Check without publishing
@@ -38,9 +39,11 @@ Replace `<version>` with the version from `pyproject.toml`:
 ./scripts/release.sh --check v<version>
 ```
 
-This validates the exact commit. It creates no tag or release.
+This is the local pre-merge check. It validates the exact commit. It creates no tag or release.
 
-## 4. Publish after approval
+## 4. Publish if the workflow fails
+
+If the `release.yml` workflow does not publish, run the fallback on the clean `main` checkout:
 
 ```sh
 ./scripts/release.sh --publish v<version>
@@ -71,4 +74,5 @@ proves that only the local checkout renders.
 - Gitleaks finds no secret in the history.
 - The published tag points to the validated commit.
 
-Releases are published by `scripts/release.sh`. No workflow publishes a release.
+Releases are published by the `release.yml` workflow on the merge to `main`.
+`scripts/release.sh --publish` is the fallback when that workflow fails.

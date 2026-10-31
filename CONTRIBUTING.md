@@ -164,4 +164,4 @@ after approval.
 Before review, confirm names are clear, tests cover important failures, built files are current,
 tracked values are fake, and documentation matches behavior.
 
-Publishing a version is separate. Maintainers use the [release guide](RELEASING.md).
+The version-bump merge publishes the release. Maintainers use the [release guide](RELEASING.md).

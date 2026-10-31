@@ -20,6 +20,8 @@ WORKFLOW_DIRECTORY = REPOSITORY_ROOT / ".github" / "workflows"
 GUARD_JOB_NAME = "runner-guard"
 GUARD_SCRIPT = "scripts/check_workflow_runners.py"
 ALLOWED_RUNNER = "ubuntu-latest"
+RELEASE_WORKFLOW_NAME = "release.yml"
+RELEASE_JOB_NAME = "release"
 
 _ANCHOR = re.compile(r"(?:^|[\s\[{])&[A-Za-z0-9_-]+")
 _ALIAS = re.compile(r"(?:^|[\s\[{,])[*][A-Za-z_][A-Za-z0-9_-]*")
@@ -237,6 +239,71 @@ def _check_needs(
     return []
 
 
+def _permission_children(block: list[SourceLine], line: SourceLine) -> list[SourceLine]:
+    if _value_after_key(line.text):
+        return []
+    start = block.index(line)
+    children: list[SourceLine] = []
+    for candidate in block[start + 1 :]:
+        if candidate.indent <= line.indent:
+            break
+        children.append(candidate)
+    return children
+
+
+def _check_top_level_permissions(path: Path, lines: list[SourceLine]) -> list[Violation]:
+    permissions_line = next(
+        (line for line in lines if line.indent == 0 and _is_key(line.text, "permissions")),
+        None,
+    )
+    if permissions_line is None:
+        return [Violation(path, 1, "workflow has no top-level permissions")]
+    reason = "workflow permissions must be exactly contents: read"
+    value = _value_after_key(permissions_line.text)
+    if value:
+        if re.sub(r"\s+", "", value) != "{contents:read}":
+            return [Violation(path, permissions_line.number, reason)]
+        return []
+    children = _permission_children(lines, permissions_line)
+    if (
+        len(children) != 1
+        or not _is_key(children[0].text, "contents")
+        or _unquote(_value_after_key(children[0].text)) != "read"
+    ):
+        return [Violation(path, permissions_line.number, reason)]
+    return []
+
+
+def _check_job_permissions(
+    path: Path,
+    job_name: str,
+    permissions_line: SourceLine,
+    block: list[SourceLine],
+) -> list[Violation]:
+    if path.name != RELEASE_WORKFLOW_NAME or job_name != RELEASE_JOB_NAME:
+        return [
+            Violation(
+                path,
+                permissions_line.number,
+                f"job '{job_name}' must not set permissions",
+            )
+        ]
+    reason = "release job permissions must be exactly contents: write"
+    value = _value_after_key(permissions_line.text)
+    if value:
+        if re.sub(r"\s+", "", value) != "{contents:write}":
+            return [Violation(path, permissions_line.number, reason)]
+        return []
+    children = _permission_children(block, permissions_line)
+    if (
+        len(children) != 1
+        or not _is_key(children[0].text, "contents")
+        or _unquote(_value_after_key(children[0].text)) != "write"
+    ):
+        return [Violation(path, permissions_line.number, reason)]
+    return []
+
+
 def _step_chunks(block: list[SourceLine], steps_line: SourceLine) -> list[list[SourceLine]]:
     steps_index = block.index(steps_line)
     remaining = block[steps_index + 1 :]
@@ -386,6 +453,12 @@ def _check_job(
 
     violations.extend(_check_runs_on(path, job_name, direct_children))
     violations.extend(_check_needs(path, job_name, direct_children, block))
+    permissions_line = next(
+        (line for line in direct_children if _is_key(line.text, "permissions")),
+        None,
+    )
+    if permissions_line is not None and job_name != GUARD_JOB_NAME:
+        violations.extend(_check_job_permissions(path, job_name, permissions_line, block))
     if job_name == GUARD_JOB_NAME:
         violations.extend(_check_guard_job(path, direct_children, block))
     return violations
@@ -394,6 +467,7 @@ def _check_job(
 def check_workflow_file(path: Path) -> list[Violation]:
     lines = _source_lines(path.read_text(encoding="utf-8"))
     violations = _check_yaml_features(path, lines)
+    violations.extend(_check_top_level_permissions(path, lines))
 
     for line in lines:
         if line.indent != 0:

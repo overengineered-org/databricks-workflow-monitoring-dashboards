@@ -41,6 +41,11 @@ RULE_FIXTURES = {
     "bashenv.yml": "workflow key 'env' is not allowed",
     "defaults.yml": "runner-guard job key 'defaults' is not allowed",
     "workflow_defaults.yml": "workflow key 'defaults' is not allowed",
+    "permissions_missing.yml": "workflow has no top-level permissions",
+    "permissions_write.yml": "workflow permissions must be exactly contents: read",
+    "job_permissions_write.yml": "job 'release' must not set permissions",
+    "release/other_job_write/release.yml": "job 'validate' must not set permissions",
+    "release/extra_scope/release.yml": "release job permissions must be exactly contents: write",
 }
 
 
@@ -95,13 +100,17 @@ class RunnerGuardFixtureTests(unittest.TestCase):
                     f"{path.name} has non-ubuntu jobs {sorted(non_ubuntu_jobs)} but the guard passed",
                 )
 
+    def test_release_fixture_passes(self) -> None:
+        passing_release = FIXTURE_DIRECTORY / "release" / "passing" / "release.yml"
+        self.assertEqual(check_workflow_file(passing_release), [])
+
 
 class RepositoryWorkflowTests(unittest.TestCase):
     def test_real_workflow_files_pass(self) -> None:
         paths = _workflow_paths(WORKFLOW_DIRECTORY)
         self.assertEqual(
             {path.name for path in paths},
-            {"dco.yml", "runner-guard.yml", "validate.yml"},
+            {"dco.yml", "release.yml", "runner-guard.yml", "validate.yml"},
         )
         self.assertEqual(check_workflows(WORKFLOW_DIRECTORY), [])
 
