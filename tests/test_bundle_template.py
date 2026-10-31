@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
+from tests._paths import REPOSITORY_ROOT
+
+# isort: split
 from scripts.build_template import (
     PRODUCT_DIRECTORY,
     TEMPLATE_PROJECT,
@@ -18,9 +23,9 @@ from scripts.build_template import (
     build_template,
     project_version,
 )
-from src.workflow_monitoring_config import load_workflow_monitoring_configuration
+from workflow_monitoring_config import load_workflow_monitoring_configuration
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+# isort: split
 TEMPLATE_ROOT = REPOSITORY_ROOT / "template"
 TEMPLATE_INPUT_PATH = REPOSITORY_ROOT / "tests" / "fixtures" / "template-input.json"
 TEMPLATE_CONFIGURATION_PATH = TEMPLATE_PROJECT / "workflow-monitoring.yml.tmpl"
@@ -99,8 +104,22 @@ def _render_template(output_directory: Path) -> Path:
     return output_directory / input_values["project_name"]
 
 
-@unittest.skipUnless(shutil.which("databricks"), "Databricks CLI is required")
+def _require_databricks_cli() -> None:
+    """Fail under CI when the CLI is missing. Skip the render tests only locally."""
+    if shutil.which("databricks"):
+        return
+    if os.environ.get("CI"):
+        raise AssertionError(
+            "Databricks CLI is missing while CI is set. The render gate must not pass."
+        )
+    raise unittest.SkipTest("Databricks CLI is required")
+
+
 class TemplateRenderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        _require_databricks_cli()
+
     def test_rendered_product_files_are_byte_identical_and_prompt_free(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_directory = Path(temporary_directory)
@@ -134,6 +153,18 @@ class TemplateRenderTests(unittest.TestCase):
                 rendered_project / "workflow_monitoring" / "workflow-monitoring.schema.json",
             )
             self.assertEqual(configuration.active_workflows, ())
+
+    def test_every_rendered_yaml_file_parses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            rendered_project = _render_template(Path(temporary_directory))
+            rendered_yaml_files = sorted(rendered_project.rglob("*.yml"))
+            self.assertTrue(rendered_yaml_files)
+            for rendered_yaml_file in rendered_yaml_files:
+                with self.subTest(
+                    rendered_yaml_file=str(rendered_yaml_file.relative_to(rendered_project))
+                ):
+                    yaml_document = yaml.safe_load(rendered_yaml_file.read_text(encoding="utf-8"))
+                    self.assertIsInstance(yaml_document, dict)
 
 
 class TemplateLayoutTests(unittest.TestCase):

@@ -8,9 +8,11 @@ from pathlib import Path
 
 import yaml
 
+from tests._paths import REPOSITORY_ROOT
+
+# isort: split
 from scripts.check_workflow_runners import check_workflow_file, check_workflows
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIRECTORY = REPOSITORY_ROOT / ".github" / "workflows"
 FIXTURE_DIRECTORY = REPOSITORY_ROOT / "tests" / "fixtures" / "workflows"
 DOCKERFILE_PATH = REPOSITORY_ROOT / ".act" / "Dockerfile"
