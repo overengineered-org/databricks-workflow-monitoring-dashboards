@@ -20,7 +20,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "ruff>=0.16.3,<0.17.0",
+    "ruff>=0.17.2,<0.18.0",
 ]
 
 # Keep formatting and lint rules small. Tests use Python's standard library.

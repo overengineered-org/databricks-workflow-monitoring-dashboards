@@ -37,7 +37,7 @@ You need:
 
 | Tool | Minimum |
 | --- | --- |
-| Databricks CLI | 1.13.0 |
+| Databricks CLI | 1.22.1 |
 
 ```sh
 databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
