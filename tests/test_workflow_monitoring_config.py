@@ -491,11 +491,13 @@ class SchemaScheduleRuleTests(unittest.TestCase):
             "day_of_month": 3,
         }
         errors = self._sla_errors({**base_schedule, field: field_values[field]})
-        # The schema forbids the field with a false schema, which reports no validator name
-        # and carries the field value as its instance.
+        # The schema forbids the field with {"not": true}, which reports a "not" error
+        # on the field's own path.
         self.assertTrue(
             any(
-                error.validator is None and error.instance == field_values[field]
+                error.validator == "not"
+                and error.validator_value is True
+                and error.absolute_path[-1] == field
                 for error in errors
             ),
             f"forbidden field {field} was accepted: {errors}",

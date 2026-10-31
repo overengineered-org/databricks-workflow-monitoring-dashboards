@@ -80,28 +80,28 @@
         {
           "if": { "properties": { "frequency": { "const": "daily" } }, "required": ["frequency"] },
           "then": {
-            "properties": { "day_of_week": false, "first_deadline_date": false, "day_of_month": false }
+            "properties": { "day_of_week": {"not": true}, "first_deadline_date": {"not": true}, "day_of_month": {"not": true} }
           }
         },
         {
           "if": { "properties": { "frequency": { "const": "weekly" } }, "required": ["frequency"] },
           "then": {
             "required": ["day_of_week"],
-            "properties": { "first_deadline_date": false, "day_of_month": false }
+            "properties": { "first_deadline_date": {"not": true}, "day_of_month": {"not": true} }
           }
         },
         {
           "if": { "properties": { "frequency": { "const": "fortnightly" } }, "required": ["frequency"] },
           "then": {
             "required": ["first_deadline_date"],
-            "properties": { "day_of_week": false, "day_of_month": false }
+            "properties": { "day_of_week": {"not": true}, "day_of_month": {"not": true} }
           }
         },
         {
           "if": { "properties": { "frequency": { "const": "monthly" } }, "required": ["frequency"] },
           "then": {
             "required": ["day_of_month"],
-            "properties": { "day_of_week": false, "first_deadline_date": false }
+            "properties": { "day_of_week": {"not": true}, "first_deadline_date": {"not": true} }
           }
         }
       ]
