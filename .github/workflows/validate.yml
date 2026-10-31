@@ -33,8 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GOCACHE: /tmp/workflow-monitoring-act-go-cache
-      GOMODCACHE: /tmp/workflow-monitoring-act-go-mod-cache
       UV_CACHE_DIR: /tmp/workflow-monitoring-act-uv-cache
       UV_PROJECT_ENVIRONMENT: /tmp/workflow-monitoring-act-venv
     steps:
