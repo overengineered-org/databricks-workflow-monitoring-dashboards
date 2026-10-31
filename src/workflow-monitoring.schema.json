@@ -80,41 +80,28 @@
         {
           "if": { "properties": { "frequency": { "const": "daily" } }, "required": ["frequency"] },
           "then": {
-            "allOf": [
-              { "not": { "required": ["day_of_week"] } },
-              { "not": { "required": ["first_deadline_date"] } },
-              { "not": { "required": ["day_of_month"] } }
-            ]
+            "properties": { "day_of_week": false, "first_deadline_date": false, "day_of_month": false }
           }
         },
         {
           "if": { "properties": { "frequency": { "const": "weekly" } }, "required": ["frequency"] },
           "then": {
             "required": ["day_of_week"],
-            "allOf": [
-              { "not": { "required": ["first_deadline_date"] } },
-              { "not": { "required": ["day_of_month"] } }
-            ]
+            "properties": { "first_deadline_date": false, "day_of_month": false }
           }
         },
         {
           "if": { "properties": { "frequency": { "const": "fortnightly" } }, "required": ["frequency"] },
           "then": {
             "required": ["first_deadline_date"],
-            "allOf": [
-              { "not": { "required": ["day_of_week"] } },
-              { "not": { "required": ["day_of_month"] } }
-            ]
+            "properties": { "day_of_week": false, "day_of_month": false }
           }
         },
         {
           "if": { "properties": { "frequency": { "const": "monthly" } }, "required": ["frequency"] },
           "then": {
             "required": ["day_of_month"],
-            "allOf": [
-              { "not": { "required": ["day_of_week"] } },
-              { "not": { "required": ["first_deadline_date"] } }
-            ]
+            "properties": { "day_of_week": false, "first_deadline_date": false }
           }
         }
       ]

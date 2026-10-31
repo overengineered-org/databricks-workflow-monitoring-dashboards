@@ -117,7 +117,7 @@ class ConfigurationTests(unittest.TestCase):
                       day_of_week: monday
                 """,
                 None,
-                r"should not be valid under \{'required': \['day_of_week'\]\}",
+                r"workflows\[0\]\.sla\.day_of_week: not allowed when frequency is daily",
             ),
             (
                 "invalid timezone",
@@ -256,17 +256,130 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaises(ValueError) as raised_error:
             _load_configuration_yaml(configuration_yaml)
 
-        error_message = str(raised_error.exception)
-        self.assertIn("workflow monitoring configuration does not match schema:", error_message)
-        self.assertIn(
-            "workflows[0].sla: {'frequency': 'daily', 'completion_time': '06:00', "
-            "'day_of_week': 'monday'} should not be valid under {'required': ['day_of_week']}",
-            error_message,
+        self.assertEqual(
+            str(raised_error.exception),
+            "workflow monitoring configuration does not match schema:\n"
+            "  workflows[0].sla.day_of_week: not allowed when frequency is daily\n"
+            "  workflows[1].sla: 'day_of_week' is a required property",
         )
-        self.assertIn(
-            "workflows[1].sla: 'day_of_week' is a required property",
-            error_message,
+
+    def test_schedule_field_errors_report_the_exact_collector_message(self) -> None:
+        test_cases = (
+            (
+                "daily forbids day_of_week",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: daily
+                      completion_time: "06:00"
+                      day_of_week: monday
+                """,
+                "workflows[0].sla.day_of_week: not allowed when frequency is daily",
+            ),
+            (
+                "weekly requires day_of_week",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: weekly
+                      completion_time: "06:00"
+                """,
+                "workflows[0].sla: 'day_of_week' is a required property",
+            ),
+            (
+                "weekly forbids first_deadline_date",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: weekly
+                      completion_time: "06:00"
+                      day_of_week: monday
+                      first_deadline_date: "2026-01-12"
+                """,
+                "workflows[0].sla.first_deadline_date: not allowed when frequency is weekly",
+            ),
+            (
+                "fortnightly requires first_deadline_date",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: fortnightly
+                      completion_time: "06:00"
+                """,
+                "workflows[0].sla: 'first_deadline_date' is a required property",
+            ),
+            (
+                "fortnightly forbids day_of_week",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: fortnightly
+                      completion_time: "06:00"
+                      first_deadline_date: "2026-01-12"
+                      day_of_week: monday
+                """,
+                "workflows[0].sla.day_of_week: not allowed when frequency is fortnightly",
+            ),
+            (
+                "monthly requires day_of_month",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: monthly
+                      completion_time: "06:00"
+                """,
+                "workflows[0].sla: 'day_of_month' is a required property",
+            ),
+            (
+                "monthly forbids day_of_week",
+                """
+                version: 3
+                default_timezone: UTC
+                workflows:
+                  - job_id: 1
+                    monitoring_status: active
+                    sla:
+                      frequency: monthly
+                      completion_time: "06:00"
+                      day_of_month: 31
+                      day_of_week: monday
+                """,
+                "workflows[0].sla.day_of_week: not allowed when frequency is monthly",
+            ),
         )
+
+        for case_name, configuration_yaml, expected_line in test_cases:
+            with self.subTest(case_name):
+                with self.assertRaises(ValueError) as raised_error:
+                    _load_configuration_yaml(configuration_yaml)
+                self.assertEqual(
+                    str(raised_error.exception),
+                    "workflow monitoring configuration does not match schema:\n  " + expected_line,
+                )
 
     def test_only_active_workflows_become_table_rows(self) -> None:
         configuration_yaml = """
@@ -378,9 +491,13 @@ class SchemaScheduleRuleTests(unittest.TestCase):
             "day_of_month": 3,
         }
         errors = self._sla_errors({**base_schedule, field: field_values[field]})
-        expected_message = f"should not be valid under {{'required': ['{field}']}}"
+        # The schema forbids the field with a false schema, which reports no validator name
+        # and carries the field value as its instance.
         self.assertTrue(
-            any(expected_message in error.message for error in errors),
+            any(
+                error.validator is None and error.instance == field_values[field]
+                for error in errors
+            ),
             f"forbidden field {field} was accepted: {errors}",
         )
 

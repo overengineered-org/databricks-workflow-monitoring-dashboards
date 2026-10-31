@@ -160,26 +160,94 @@ def _validate_configuration_schema(configuration_document: Any, schema_path: Pat
     if not validation_errors:
         return
 
-    error_lines = [
-        f"{_schema_error_path(validation_error)}: {validation_error.message}"
-        for validation_error in validation_errors
-    ]
+    error_lines = _format_schema_errors(validation_errors, configuration_document, schema_document)
     raise ValueError(
         "workflow monitoring configuration does not match schema:\n  " + "\n  ".join(error_lines)
     )
 
 
-def _schema_error_path(validation_error: Any) -> str:
-    path_parts: list[str] = []
-    for path_part in validation_error.absolute_path:
-        if isinstance(path_part, int):
-            if path_parts:
-                path_parts[-1] = f"{path_parts[-1]}[{path_part}]"
-            else:
-                path_parts.append(f"[{path_part}]")
+def _format_schema_errors(
+    validation_errors: list,
+    configuration_document: Any,
+    schema_document: Any,
+) -> list[str]:
+    lines: list[str] = []
+    forbidden_lines = iter(
+        _forbidden_field_lines(validation_errors, configuration_document, schema_document)
+    )
+    for error in validation_errors:
+        if _is_forbidden_field_error(error):
+            lines.append(next(forbidden_lines))
         else:
-            path_parts.append(str(path_part))
-    return ".".join(path_parts) or "root"
+            lines.append(f"{_schema_error_path(error.absolute_path)}: {error.message}")
+    return lines
+
+
+def _is_forbidden_field_error(error: Any) -> bool:
+    # A false schema error carries no validator name. In this schema only the
+    # frequency rules use false schemas.
+    return error.validator is None and error.validator_value is None
+
+
+def _forbidden_field_lines(
+    validation_errors: list,
+    configuration_document: Any,
+    schema_document: Any,
+) -> list[str]:
+    """Build one readable line per false schema error, in error order."""
+
+    pending_fields: dict[tuple, list[str]] = {}
+    lines: list[str] = []
+    for error in validation_errors:
+        if not _is_forbidden_field_error(error):
+            continue
+        sla_path = tuple(error.absolute_path)
+        sla_document = _document_node(configuration_document, sla_path)
+        frequency = sla_document.get("frequency")
+        if sla_path not in pending_fields:
+            pending_fields[sla_path] = _forbidden_fields(sla_document, frequency, schema_document)
+        field = pending_fields[sla_path].pop(0)
+        lines.append(
+            f"{_schema_error_path(sla_path + (field,))}: not allowed when frequency is {frequency}"
+        )
+    return lines
+
+
+def _forbidden_fields(sla_document: dict, frequency: Any, schema_document: Any) -> list[str]:
+    """List the fields the schema forbids for the frequency in the document, in schema order."""
+
+    entries = schema_document.get("$defs", {}).get("sla", {}).get("allOf", [])
+    for entry in entries:
+        if_schema = entry.get("if", {})
+        if if_schema.get("properties", {}).get("frequency", {}).get("const") != frequency:
+            continue
+        then_properties = entry.get("then", {}).get("properties", {})
+        return [
+            field
+            for field, sub_schema in then_properties.items()
+            if sub_schema is False and field in sla_document
+        ]
+    return []
+
+
+def _document_node(document: Any, path: tuple) -> Any:
+    node = document
+    for part in path:
+        node = node[part]
+    return node
+
+
+def _schema_error_path(path_parts: Any) -> str:
+    path: list[str] = []
+    for part in path_parts:
+        if isinstance(part, int):
+            if path:
+                path[-1] = f"{path[-1]}[{part}]"
+            else:
+                path.append(f"[{part}]")
+        else:
+            path.append(str(part))
+    return ".".join(path) or "root"
 
 
 def _validate_iana_timezone(timezone_name: str) -> None:
