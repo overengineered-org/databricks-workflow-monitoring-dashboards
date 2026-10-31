@@ -74,6 +74,19 @@ jobs:
         run: jq empty src/dashboards/workflow-monitoring.lvdash.json
       - name: Check banned em dash
         # Build the character from bytes so this file does not contain it itself.
+        # grep exits 1 for no match and 2 for an error. Only exit 1 may pass.
         run: |
           banned_character="$(printf '\342\200\224')"
-          test -z "$(rg -l "$banned_character" --hidden --glob '!.git/**' .)"
+          command -v grep >/dev/null || { echo "grep is required for the em dash check" >&2; exit 1; }
+          set +e
+          grep -rIl --exclude-dir=.git "$banned_character" .
+          status=$?
+          set -e
+          if [[ "$status" -gt 1 ]]; then
+            echo "grep exited with code $status" >&2
+            exit 1
+          fi
+          if [[ "$status" -eq 0 ]]; then
+            echo "banned em dash found in the files above" >&2
+            exit 1
+          fi
