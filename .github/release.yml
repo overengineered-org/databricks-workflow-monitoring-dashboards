@@ -4,6 +4,9 @@ changelog:
       - duplicate
       - wontfix
   categories:
+    - title: Upgrade steps
+      labels:
+        - upgrade-steps
     - title: Breaking changes
       labels:
         - breaking-change

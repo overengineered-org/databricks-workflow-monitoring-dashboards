@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tomllib
 import unittest
 
 import yaml
@@ -84,6 +85,27 @@ class TemplateAndCliVersionContractTests(unittest.TestCase):
         self.assertEqual(minimum_version, dockerfile_pin.group(1))
         self.assertEqual(minimum_version, workflow_pin.group(1))
         self.assertEqual(minimum_version, workflow_version.group(1))
+
+
+class ReleaseVersionReferenceTests(unittest.TestCase):
+    """Keep every tracked tag reference on the version from pyproject.toml."""
+
+    def test_documented_tags_equal_project_version(self) -> None:
+        pyproject_document = tomllib.loads(
+            (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        expected_tag = f"v{pyproject_document['project']['version']}"
+
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        readme_tags = re.findall(r"--tag (v\d+\.\d+\.\d+)", readme)
+        self.assertEqual(readme_tags, [expected_tag])
+
+        configuration_template = TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8")
+        schema_tags = re.findall(
+            r"raw\.githubusercontent\.com/[^/]+/[^/]+/(v\d+\.\d+\.\d+)/",
+            configuration_template,
+        )
+        self.assertEqual(schema_tags, [expected_tag])
 
 
 class ShellScriptContractTests(unittest.TestCase):
