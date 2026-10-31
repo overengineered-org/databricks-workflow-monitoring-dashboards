@@ -130,9 +130,8 @@ Apply these checks to implementation and code review before calling work ready:
 
 1. Trace the requirement through inputs, execution, stored or generated output, and consumers.
    Map each acceptance criterion to code and a verification result.
-2. Run focused tests and `scripts/run-local-validation.sh`. For affected Go code, also run
-   `go vet ./...` and `go test -race ./...`. For affected Python code, inspect targeted
-   correctness and maintainability lint findings. Record any check not run.
+2. Run focused tests and `scripts/run-local-validation.sh`. For affected Python code, inspect
+   targeted correctness and maintainability lint findings. Record any check not run.
 3. Scan affected code for unused symbols and unreachable paths; scan the whole repository
    when the review scope is repository-wide. Use available dead-code analyzers and `rg` to
    check callers, dynamic entry points, generated assets, tests, and documentation before

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/src/workflow-monitoring.schema.json",
-  "$comment": "This schema powers editor completion. Python performs cross-field and IANA timezone checks.",
+  "$comment": "This schema powers editor completion and the frequency-specific field rules. Python rechecks the schedule fields and checks the IANA timezones and the duplicate job IDs at load time.",
   "title": "Databricks workflow monitoring configuration",
   "type": "object",
   "additionalProperties": false,
@@ -74,7 +74,37 @@
           "maximum": 31,
           "description": "Monthly deadline day. Short months use their final day."
         }
-      }
+      },
+      "$comment": "Each frequency requires its own field and forbids the fields of the other frequencies.",
+      "allOf": [
+        {
+          "if": { "properties": { "frequency": { "const": "daily" } }, "required": ["frequency"] },
+          "then": {
+            "properties": { "day_of_week": {"not": true}, "first_deadline_date": {"not": true}, "day_of_month": {"not": true} }
+          }
+        },
+        {
+          "if": { "properties": { "frequency": { "const": "weekly" } }, "required": ["frequency"] },
+          "then": {
+            "required": ["day_of_week"],
+            "properties": { "first_deadline_date": {"not": true}, "day_of_month": {"not": true} }
+          }
+        },
+        {
+          "if": { "properties": { "frequency": { "const": "fortnightly" } }, "required": ["frequency"] },
+          "then": {
+            "required": ["first_deadline_date"],
+            "properties": { "day_of_week": {"not": true}, "day_of_month": {"not": true} }
+          }
+        },
+        {
+          "if": { "properties": { "frequency": { "const": "monthly" } }, "required": ["frequency"] },
+          "then": {
+            "required": ["day_of_month"],
+            "properties": { "day_of_week": {"not": true}, "first_deadline_date": {"not": true} }
+          }
+        }
+      ]
     }
   }
 }

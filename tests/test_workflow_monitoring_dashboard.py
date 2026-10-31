@@ -1759,16 +1759,6 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual(syntax_check.returncode, 0, syntax_check.stderr)
         release_script = RELEASE_SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn("scripts/run-local-validation.sh", release_script)
-        expected_cli_targets = {
-            "darwin arm64 tar.gz",
-            "darwin amd64 tar.gz",
-            "linux arm64 tar.gz",
-            "linux amd64 tar.gz",
-            "windows amd64 zip",
-        }
-        for expected_cli_target in expected_cli_targets:
-            self.assertIn(f"build_cli_asset {expected_cli_target}", release_script)
-        self.assertIn('"${release_assets[@]}"', release_script)
 
         local_validation_syntax_check = subprocess.run(
             ["bash", "-n", str(LOCAL_VALIDATION_SCRIPT_PATH)],

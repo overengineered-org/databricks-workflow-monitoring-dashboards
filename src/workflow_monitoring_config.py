@@ -160,26 +160,45 @@ def _validate_configuration_schema(configuration_document: Any, schema_path: Pat
     if not validation_errors:
         return
 
-    error_lines = [
-        f"{_schema_error_path(validation_error)}: {validation_error.message}"
-        for validation_error in validation_errors
-    ]
+    error_lines = _format_schema_errors(validation_errors, configuration_document)
     raise ValueError(
         "workflow monitoring configuration does not match schema:\n  " + "\n  ".join(error_lines)
     )
 
 
-def _schema_error_path(validation_error: Any) -> str:
-    path_parts: list[str] = []
-    for path_part in validation_error.absolute_path:
-        if isinstance(path_part, int):
-            if path_parts:
-                path_parts[-1] = f"{path_parts[-1]}[{path_part}]"
-            else:
-                path_parts.append(f"[{path_part}]")
+def _format_schema_errors(validation_errors: list, configuration_document: Any) -> list[str]:
+    lines: list[str] = []
+    for error in validation_errors:
+        if error.validator == "not" and error.validator_value is True:
+            frequency = _document_node(configuration_document, tuple(error.absolute_path)[:-1]).get(
+                "frequency"
+            )
+            lines.append(
+                f"{_schema_error_path(error.absolute_path)}: not allowed when frequency is {frequency}"
+            )
         else:
-            path_parts.append(str(path_part))
-    return ".".join(path_parts) or "root"
+            lines.append(f"{_schema_error_path(error.absolute_path)}: {error.message}")
+    return lines
+
+
+def _document_node(document: Any, path: tuple) -> Any:
+    node = document
+    for part in path:
+        node = node[part]
+    return node
+
+
+def _schema_error_path(path_parts: Any) -> str:
+    path: list[str] = []
+    for part in path_parts:
+        if isinstance(part, int):
+            if path:
+                path[-1] = f"{path[-1]}[{part}]"
+            else:
+                path.append(f"[{part}]")
+        else:
+            path.append(str(part))
+    return ".".join(path) or "root"
 
 
 def _validate_iana_timezone(timezone_name: str) -> None:

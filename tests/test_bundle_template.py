@@ -18,6 +18,7 @@ from scripts.build_template import (
     build_template,
     project_version,
 )
+from src.workflow_monitoring_config import load_workflow_monitoring_configuration
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = REPOSITORY_ROOT / "template"
@@ -63,44 +64,47 @@ class TemplateBuildTests(unittest.TestCase):
         )
 
 
+def _render_template(output_directory: Path) -> Path:
+    input_values = json.loads(TEMPLATE_INPUT_PATH.read_text(encoding="utf-8"))
+    render_environment = os.environ.copy()
+    for variable_name in ("DATABRICKS_CONFIG_FILE", "DATABRICKS_CONFIG_PROFILE"):
+        render_environment.pop(variable_name, None)
+    # The pinned CLI asks for credentials even when the template uses no workspace helper.
+    # Fake values keep the render offline and independent of the developer profile.
+    render_environment.update(
+        {
+            "DATABRICKS_HOST": "https://example.invalid",
+            "DATABRICKS_TOKEN": "fake",
+        }
+    )
+    render_process = subprocess.run(
+        [
+            "databricks",
+            "bundle",
+            "init",
+            str(TEMPLATE_ROOT),
+            "--config-file",
+            str(TEMPLATE_INPUT_PATH),
+            "--output-dir",
+            str(output_directory),
+        ],
+        stdin=subprocess.DEVNULL,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=render_environment,
+    )
+    assert render_process.returncode == 0, render_process.stderr
+    return output_directory / input_values["project_name"]
+
+
 @unittest.skipUnless(shutil.which("databricks"), "Databricks CLI is required")
 class TemplateRenderTests(unittest.TestCase):
     def test_rendered_product_files_are_byte_identical_and_prompt_free(self) -> None:
-        input_values = json.loads(TEMPLATE_INPUT_PATH.read_text(encoding="utf-8"))
-        render_environment = os.environ.copy()
-        for variable_name in ("DATABRICKS_CONFIG_FILE", "DATABRICKS_CONFIG_PROFILE"):
-            render_environment.pop(variable_name, None)
-        # The pinned CLI asks for credentials even when the template uses no workspace helper.
-        # Fake values keep the render offline and independent of the developer profile.
-        render_environment.update(
-            {
-                "DATABRICKS_HOST": "https://example.invalid",
-                "DATABRICKS_TOKEN": "fake",
-            }
-        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_directory = Path(temporary_directory)
-            render_process = subprocess.run(
-                [
-                    "databricks",
-                    "bundle",
-                    "init",
-                    str(TEMPLATE_ROOT),
-                    "--config-file",
-                    str(TEMPLATE_INPUT_PATH),
-                    "--output-dir",
-                    str(output_directory),
-                ],
-                stdin=subprocess.DEVNULL,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=render_environment,
-            )
-            self.assertEqual(render_process.returncode, 0, render_process.stderr)
-
-            rendered_project = output_directory / input_values["project_name"]
+            rendered_project = _render_template(output_directory)
             rendered_product_directory = rendered_project / "workflow_monitoring"
             product_files = sorted(path for path in PRODUCT_DIRECTORY.rglob("*") if path.is_file())
             self.assertTrue(product_files)
@@ -119,6 +123,17 @@ class TemplateRenderTests(unittest.TestCase):
                 (TEMPLATE_PROJECT / ".gitignore").read_bytes(),
             )
             self.assertEqual(rendered_gitignore.read_text(encoding="utf-8"), ".databricks/\n")
+
+    def test_rendered_configuration_loads_with_the_python_validator(self) -> None:
+        # Replaces the deleted "Test CLI with the Python validator" step: the configuration
+        # that bundle init renders must load with the Python validator.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            rendered_project = _render_template(Path(temporary_directory))
+            configuration = load_workflow_monitoring_configuration(
+                rendered_project / "workflow-monitoring.yml",
+                rendered_project / "workflow_monitoring" / "workflow-monitoring.schema.json",
+            )
+            self.assertEqual(configuration.active_workflows, ())
 
 
 class TemplateLayoutTests(unittest.TestCase):

@@ -33,8 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GOCACHE: /tmp/workflow-monitoring-act-go-cache
-      GOMODCACHE: /tmp/workflow-monitoring-act-go-mod-cache
       UV_CACHE_DIR: /tmp/workflow-monitoring-act-uv-cache
       UV_PROJECT_ENVIRONMENT: /tmp/workflow-monitoring-act-venv
     steps:
@@ -44,17 +42,6 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.12.2"
-      - name: Install Go
-        if: ${{ !env.ACT }}
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26.6"
-      - name: Install golangci-lint
-        if: ${{ !env.ACT }}
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: v2.12.2
-          install-only: true
       - name: Install Databricks CLI
         if: ${{ !env.ACT }}
         uses: databricks/setup-cli@6bb7075f85b326f8b9ce160933dfe9bcd63c8121 # v1.13.0
@@ -70,21 +57,6 @@ jobs:
         run: uv run ruff check .
       - name: Run tests
         run: uv run python -m unittest discover -s tests -v
-      - name: Check Go CLI
-        run: |
-          golangci-lint fmt --diff ./...
-          golangci-lint run ./...
-          go test ./...
-      - name: Test CLI with the Python validator
-        run: |
-          go build -trimpath -o /tmp/workflow-monitoring ./cmd/workflow-monitoring
-          /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml init --force
-          /tmp/workflow-monitoring --config /tmp/workflow-monitoring.yml add \
-            --job-id 42 \
-            --status active \
-            --completion-time 06:00
-          # #24 deletes this step together with the Go CLI.
-          uv run python -c "from pathlib import Path; from src.workflow_monitoring_config import load_workflow_monitoring_configuration as load; load(Path('/tmp/workflow-monitoring.yml'), Path('src/workflow-monitoring.schema.json'))"
       - name: Snapshot built dashboard
         run: cp src/dashboards/workflow-monitoring.lvdash.json /tmp/workflow-monitoring.lvdash.json
       - name: Build dashboard
@@ -100,6 +72,19 @@ jobs:
         run: jq empty src/dashboards/workflow-monitoring.lvdash.json
       - name: Check banned em dash
         # Build the character from bytes so this file does not contain it itself.
+        # grep exits 1 for no match and 2 for an error. Only exit 1 may pass.
         run: |
           banned_character="$(printf '\342\200\224')"
-          test -z "$(rg -l "$banned_character" --hidden --glob '!.git/**' .)"
+          command -v grep >/dev/null || { echo "grep is required for the em dash check" >&2; exit 1; }
+          set +e
+          grep -rIl --exclude-dir=.git "$banned_character" .
+          status=$?
+          set -e
+          if [[ "$status" -gt 1 ]]; then
+            echo "grep exited with code $status" >&2
+            exit 1
+          fi
+          if [[ "$status" -eq 0 ]]; then
+            echo "banned em dash found in the files above" >&2
+            exit 1
+          fi

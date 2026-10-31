@@ -51,8 +51,8 @@ load the dashboard.
 
 ## 4. Remove the example
 
-If you added the Jobs to monitoring, use `./workflow-monitoring help remove` and remove each Job
-ID. Repeat [README steps 4 and 5](../../README.md#4-validate-the-configuration). Then remove the
+If you added the Jobs to monitoring, remove each Job entry from `workflow-monitoring.yml`.
+Repeat [README steps 4 and 5](../../README.md#4-validate-the-configuration). Then remove the
 four disposable Jobs:
 
 ```sh
