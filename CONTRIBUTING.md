@@ -117,7 +117,21 @@ The `validate` check must pass on each pull request.
 Live Databricks validation is optional unless a maintainer requests it. Every live command must
 use the selected profile as `--profile <name>`.
 
-## 4. Sign your commits (DCO)
+## 4. Dependency updates
+
+Dependabot opens grouped weekly pull requests for `uv` and GitHub Actions. The 7-day cooldown
+matches the #43 rule: only releases at least 7 days old are proposed.
+
+A `jsonschema` or `pyyaml` bump fails `test_collector_environment_pins_match_uv_lock`. Fix it by
+pushing the collector Job pin change to the Dependabot branch.
+
+A `databricks/setup-cli` bump fails `test_template_cli_minimum_matches_act_and_validate_pins`.
+Fix it by bumping the CLI in `.act/Dockerfile`, the template minimum, and the README table on the
+Dependabot branch, with #43 rules.
+
+Docker image tools are bumped by hand. Review a major update by its release notes.
+
+## 5. Sign your commits (DCO)
 
 Every commit in a pull request needs a [Developer Certificate of Origin](https://developercertificate.org)
 (DCO) sign-off. The sign-off email must equal the commit author email. The `dco` check fails
@@ -134,7 +148,7 @@ git rebase --signoff origin/main
 git push --force-with-lease
 ```
 
-## 5. Open the pull request
+## 6. Open the pull request
 
 Include:
 
