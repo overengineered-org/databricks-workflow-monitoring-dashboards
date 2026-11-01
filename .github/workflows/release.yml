@@ -57,7 +57,7 @@ jobs:
           printf '%s  %s\n' "$GITLEAKS_SHA256" "$RUNNER_TEMP/$archive" | sha256sum --check -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-          gitleaks version
+          "$RUNNER_TEMP/gitleaks" version
       - name: Publish release on merge
         env:
           GH_TOKEN: ${{ github.token }}
