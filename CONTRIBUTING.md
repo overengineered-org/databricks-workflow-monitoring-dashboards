@@ -72,6 +72,7 @@ warehouse IDs, or organization-specific Job details.
 | Dashboard dataset SQL | `src/dashboards/sql/*.sql` |
 | Shared dashboard SQL fragments | `src/dashboards/sql/fragments/*.sql` |
 | Fixed-date regression SQL | `src/dashboards/sql/regression.sql` |
+| Dashboard SQL constants | `scripts/dashboard_constants.py` |
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 

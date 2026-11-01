@@ -15,7 +15,7 @@ monitored_workflows AS (
     CASE
       WHEN collected_job.job_id IS NULL THEN 'Jobs API collection pending'
       WHEN collected_job.last_error_message IS NOT NULL THEN 'Jobs API collection failed'
-      WHEN collected_job.last_successful_collection_at < current_timestamp() - INTERVAL 20 MINUTES THEN 'Jobs API data stale'
+      WHEN collected_job.last_successful_collection_at < current_timestamp() - INTERVAL ${stale_threshold_minutes} MINUTES THEN 'Jobs API data stale'
     END AS configuration_problem
   FROM configured_workflows c
   LEFT JOIN collected_jobs collected_job
@@ -25,7 +25,7 @@ monitored_workflows AS (
 monitored_runs AS (
   SELECT r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state
   FROM monitored_workflows r INNER JOIN workflow_run_api_state t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id
-  WHERE t.period_start_time >= date_sub(current_date(), 60)
+  WHERE t.period_start_time >= date_sub(current_date(), ${run_window_days})
   GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')
 )
 SELECT r.workflow_name, r.job_id, r.run_id, to_date(r.run_end_time) AS run_date, r.run_start_time, r.run_end_time,

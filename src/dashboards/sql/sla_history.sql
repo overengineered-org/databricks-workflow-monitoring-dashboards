@@ -15,7 +15,7 @@ monitored_workflows AS (
     CASE
       WHEN collected_job.job_id IS NULL THEN 'Jobs API collection pending'
       WHEN collected_job.last_error_message IS NOT NULL THEN 'Jobs API collection failed'
-      WHEN collected_job.last_successful_collection_at < current_timestamp() - INTERVAL 20 MINUTES THEN 'Jobs API data stale'
+      WHEN collected_job.last_successful_collection_at < current_timestamp() - INTERVAL ${stale_threshold_minutes} MINUTES THEN 'Jobs API data stale'
     END AS configuration_problem
   FROM configured_workflows c
   LEFT JOIN collected_jobs collected_job
@@ -25,7 +25,7 @@ monitored_workflows AS (
 workflow_runs AS (
   SELECT r.configured_order, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state
   FROM monitored_workflows r INNER JOIN workflow_run_api_state t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id
-  WHERE t.period_start_time >= date_sub(current_date(), 100)
+  WHERE t.period_start_time >= date_sub(current_date(), ${sla_run_window_days})
   GROUP BY r.configured_order, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')
 ),
 workflow_local_dates AS (
@@ -82,7 +82,7 @@ run_metrics_30d AS (
     COUNT(DISTINCT CASE WHEN result_state = 'SUCCEEDED' THEN run_id END) AS successful_runs_30d,
     COUNT(DISTINCT CASE WHEN result_state IN ('FAILED', 'CANCELLED', 'SKIPPED') THEN run_id END) AS unsuccessful_runs_30d,
     AVG(unix_timestamp(run_end_time) - unix_timestamp(run_start_time)) AS average_duration_seconds_30d
-  FROM workflow_runs WHERE run_end_time >= date_sub(current_date(), 30) GROUP BY configured_order
+  FROM workflow_runs WHERE run_end_time >= date_sub(current_date(), ${metric_window_days}) GROUP BY configured_order
 ),
 sla_metrics_30d AS (
   SELECT configured_order,
@@ -90,14 +90,14 @@ sla_metrics_30d AS (
     COUNT(CASE WHEN sla_status = 'Met' THEN 1 END) AS met_deadlines_30d,
     COUNT(CASE WHEN sla_status = 'Missed' THEN 1 END) AS missed_deadlines_30d
   FROM deadline_results
-  WHERE deadline_utc >= date_sub(current_date(), 30) AND deadline_utc <= current_timestamp()
+  WHERE deadline_utc >= date_sub(current_date(), ${metric_window_days}) AND deadline_utc <= current_timestamp()
   GROUP BY configured_order
 )
 SELECT d.workflow_name, to_date(from_utc_timestamp(d.deadline_utc, d.timezone)) AS deadline_date, d.deadline_utc, d.timezone,
   datediff(to_date(from_utc_timestamp(d.deadline_utc, d.timezone)), to_date(from_utc_timestamp(current_timestamp(), d.timezone))) AS deadline_day_offset,
   d.sla_status, d.delivery_state, d.observed_completion_utc, d.completion_margin_minutes, d.display_margin_minutes,
   CASE WHEN d.deadline_utc <= current_timestamp() THEN ROW_NUMBER() OVER (PARTITION BY d.configured_order, CASE WHEN d.deadline_utc <= current_timestamp() THEN 1 ELSE 0 END ORDER BY d.deadline_utc DESC) END AS due_deadline_recency,
-  CAST(0.99 AS DECIMAL(4, 2)) AS sla_target_rate,
+  CAST(${sla_target_rate} AS DECIMAL(4, 2)) AS sla_target_rate,
   TRY_DIVIDE(r.successful_runs_30d, r.total_runs_30d) AS run_success_rate_30d,
   TRY_DIVIDE(s.met_deadlines_30d, s.evaluated_deadlines_30d) AS sla_compliance_rate_30d,
   r.average_duration_seconds_30d,

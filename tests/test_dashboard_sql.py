@@ -12,7 +12,12 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import tests._paths  # noqa: F401 -- puts the repository root and src/ on sys.path
+
+# isort: split
+from collect_workflow_monitoring_jobs_api import RUN_HISTORY_RETENTION_DAYS
 from scripts.build_dashboard import CUSTOM_VISUALIZATION_FILES
+from scripts.dashboard_constants import RUN_WINDOW_DAYS
 from tests._paths import REPOSITORY_ROOT
 
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
@@ -228,6 +233,13 @@ class DashboardScaffoldTests(unittest.TestCase):
         elif isinstance(current_spec_node, list):
             for child_spec_node in current_spec_node:
                 self._validate_spec_field_references(child_spec_node, query_fields)
+
+
+class DashboardConstantTests(unittest.TestCase):
+    """Keep the dashboard windows linked to the collector retention."""
+
+    def test_run_window_days_match_the_collector_retention(self) -> None:
+        self.assertEqual(RUN_WINDOW_DAYS, RUN_HISTORY_RETENTION_DAYS)
 
 
 class SqlValidationScriptTests(unittest.TestCase):

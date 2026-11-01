@@ -10,6 +10,23 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+try:
+    from scripts.dashboard_constants import (
+        METRIC_WINDOW_DAYS,
+        RUN_WINDOW_DAYS,
+        SLA_RUN_WINDOW_DAYS,
+        SLA_TARGET_RATE,
+        STALE_THRESHOLD_MINUTES,
+    )
+except ImportError:  # The build script also runs directly from scripts/.
+    from dashboard_constants import (
+        METRIC_WINDOW_DAYS,
+        RUN_WINDOW_DAYS,
+        SLA_RUN_WINDOW_DAYS,
+        SLA_TARGET_RATE,
+        STALE_THRESHOLD_MINUTES,
+    )
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 DEFAULT_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
@@ -77,6 +94,22 @@ REGRESSION_DEADLINE_INSTANT_PARAMETERS = {"timezone": "'UTC'"}
 REGRESSION_DEADLINE_STATUS_PARAMETERS = {
     "run_identity": "run_end_time",
     "current_instant": "d.current_instant_utc",
+}
+DATASET_CONSTANT_VALUES = {
+    "workflow_status": {
+        "run_window_days": RUN_WINDOW_DAYS,
+        "stale_threshold_minutes": STALE_THRESHOLD_MINUTES,
+    },
+    "run_history": {
+        "run_window_days": RUN_WINDOW_DAYS,
+        "stale_threshold_minutes": STALE_THRESHOLD_MINUTES,
+    },
+    "sla_history": {
+        "sla_run_window_days": SLA_RUN_WINDOW_DAYS,
+        "metric_window_days": METRIC_WINDOW_DAYS,
+        "stale_threshold_minutes": STALE_THRESHOLD_MINUTES,
+        "sla_target_rate": SLA_TARGET_RATE,
+    },
 }
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": (
@@ -172,49 +205,45 @@ def _read_dataset_query_lines(dataset_name: str) -> list[str]:
 
 
 def _render_dataset_sql(dataset_name: str) -> str:
-    """Render one dataset SQL file with the shared fragments and window parameters."""
+    """Render one dataset SQL file with the shared fragments and window constants."""
 
-    fragment_specification = {
-        "weekday_number": ("weekday_number", None),
-        "deadline_instant": ("deadline_instant", DEADLINE_INSTANT_PARAMETERS),
-        "deadline_status": ("deadline_status", DEADLINE_STATUS_PARAMETERS),
+    substitution_values = {
+        "weekday_number": _render_fragment("weekday_number", None),
+        "deadline_instant": _render_fragment("deadline_instant", DEADLINE_INSTANT_PARAMETERS),
+        "deadline_status": _render_fragment("deadline_status", DEADLINE_STATUS_PARAMETERS),
+        **DATASET_CONSTANT_VALUES[dataset_name],
     }
     if dataset_name in DEADLINE_DATE_WINDOWS:
-        fragment_specification["deadline_dates"] = (
-            "deadline_dates",
-            DEADLINE_DATE_WINDOWS[dataset_name],
+        substitution_values["deadline_dates"] = _render_fragment(
+            "deadline_dates", DEADLINE_DATE_WINDOWS[dataset_name]
         )
-    return _render_sql_source(DATASET_SQL_FILES[dataset_name], fragment_specification)
+    return _render_sql_source(DATASET_SQL_FILES[dataset_name], substitution_values)
 
 
 def render_regression_sql() -> str:
     """Render the fixed-date regression SQL from the shared fragments."""
 
-    fragment_specification = {
-        "weekday_number": ("weekday_number", None),
-        "deadline_instant": ("deadline_instant", REGRESSION_DEADLINE_INSTANT_PARAMETERS),
-        "deadline_status": ("deadline_status", REGRESSION_DEADLINE_STATUS_PARAMETERS),
+    substitution_values = {
+        "weekday_number": _render_fragment("weekday_number", None),
+        "deadline_instant": _render_fragment(
+            "deadline_instant", REGRESSION_DEADLINE_INSTANT_PARAMETERS
+        ),
+        "deadline_status": _render_fragment(
+            "deadline_status", REGRESSION_DEADLINE_STATUS_PARAMETERS
+        ),
     }
     for placeholder, window in REGRESSION_DEADLINE_DATE_WINDOWS.items():
-        fragment_specification[placeholder] = ("deadline_dates", window)
-    return _render_sql_source(REGRESSION_SQL_PATH, fragment_specification)
+        substitution_values[placeholder] = _render_fragment("deadline_dates", window)
+    return _render_sql_source(REGRESSION_SQL_PATH, substitution_values)
 
 
-def _render_sql_source(
-    sql_path: Path,
-    fragment_specification: Mapping[str, tuple[str, Mapping[str, Any] | None]],
-) -> str:
-    """Render one SQL source file by substituting its shared fragments."""
+def _render_sql_source(sql_path: Path, substitution_values: Mapping[str, str]) -> str:
+    """Render one SQL source file by substituting its placeholders."""
 
-    fragment_text_by_placeholder = {}
-    for placeholder, (fragment_name, fragment_parameters) in fragment_specification.items():
-        fragment_text_by_placeholder[placeholder] = _render_fragment(
-            fragment_name, fragment_parameters
-        )
     sql_text = sql_path.read_text(encoding="utf-8")
     if sql_text.endswith("\n"):
         sql_text = sql_text[:-1]
-    return Template(sql_text).substitute(**fragment_text_by_placeholder)
+    return Template(sql_text).substitute(**substitution_values)
 
 
 def _render_fragment(fragment_name: str, fragment_parameters: Mapping[str, Any] | None) -> str:
