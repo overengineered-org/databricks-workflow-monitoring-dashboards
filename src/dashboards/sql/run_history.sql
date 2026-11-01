@@ -26,6 +26,8 @@ monitored_runs AS (
   SELECT r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state
   FROM monitored_workflows r INNER JOIN workflow_run_api_state t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id
   WHERE t.period_start_time >= date_sub(current_date(), ${run_window_days})
+  -- The run table is unique per (workspace_id, job_id, run_id), so each group holds one run.
+  -- The HAVING only filters run states, and a WHERE clause could do the same work.
   GROUP BY r.configured_order, r.workflow_name, r.workspace_id, r.job_id, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')
 )
 SELECT r.workflow_name, r.job_id, r.run_id, to_date(r.run_end_time) AS run_date, r.run_start_time, r.run_end_time,

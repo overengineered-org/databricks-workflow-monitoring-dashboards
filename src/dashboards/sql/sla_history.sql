@@ -25,7 +25,11 @@ monitored_workflows AS (
 workflow_runs AS (
   SELECT r.configured_order, t.run_id, MIN(t.period_start_time) AS run_start_time, MAX(t.period_end_time) AS run_end_time, MAX(t.result_state) AS result_state
   FROM monitored_workflows r INNER JOIN workflow_run_api_state t ON r.workspace_id = t.workspace_id AND r.job_id = t.job_id
+  -- The collector keeps only 60 days of runs, so this window reads no extra rows today.
+  -- It stays wider than retention so period joins keep working if retention grows.
   WHERE t.period_start_time >= date_sub(current_date(), ${sla_run_window_days})
+  -- The run table is unique per (workspace_id, job_id, run_id), so each group holds one run.
+  -- The HAVING only filters run states, and a WHERE clause could do the same work.
   GROUP BY r.configured_order, t.run_id HAVING MAX(t.result_state) IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'SKIPPED')
 ),
 workflow_local_dates AS (
