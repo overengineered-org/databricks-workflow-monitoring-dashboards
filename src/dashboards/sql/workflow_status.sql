@@ -48,13 +48,7 @@ workflow_local_dates AS (
 -- Fortnightly rows keep a pre-anchor boundary for the first period; only the anchor and later dates are eligible.
 -- Build the nearby deadline dates for each supported schedule.
 deadline_dates AS (
-  SELECT w.*, deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(date_sub(local_today, 2), date_add(local_today, 1))) d AS deadline_date WHERE frequency = 'daily'
-  UNION ALL
-  SELECT w.*, date_add(date_add(local_today, -pmod(dayofweek(local_today) - target_day, 7)), offset * 7) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'weekly'
-  UNION ALL
-  SELECT w.*, date_add(first_deadline_date, (GREATEST(CAST(FLOOR(datediff(local_today, first_deadline_date) / 14.0) AS INT), 0) + offset) * 14) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'fortnightly'
-  UNION ALL
-  SELECT w.*, date_add(to_date(add_months(date_trunc('MONTH', local_today), offset)), LEAST(day_of_month, day(last_day(add_months(local_today, offset)))) - 1) AS deadline_date FROM workflow_local_dates w LATERAL VIEW EXPLODE(sequence(-2, 1)) o AS offset WHERE frequency = 'monthly'
+${deadline_dates}
 ),
 deadline_instants AS (
   SELECT *, to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), timezone) AS deadline_utc

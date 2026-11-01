@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -18,6 +19,33 @@ DATASET_SQL_FILES = {
 }
 FRAGMENT_FILES = {
     "weekday_number": REPOSITORY_ROOT / "src/dashboards/sql/fragments/weekday_number.sql",
+    "deadline_dates": REPOSITORY_ROOT / "src/dashboards/sql/fragments/deadline_dates.sql",
+}
+DEADLINE_DATE_WINDOWS = {
+    "workflow_status": {
+        "daily_window_start_days": 2,
+        "daily_window_end_days": 1,
+        "weekly_anchor_date": "date_add(local_today, -pmod(dayofweek(local_today) - target_day, 7))",
+        "weekly_offset_start": -2,
+        "weekly_offset_end": 1,
+        "fortnightly_offset_start": -2,
+        "fortnightly_offset_end": 1,
+        "monthly_offset_start": -2,
+        "monthly_offset_end": 1,
+    },
+    "sla_history": {
+        "daily_window_start_days": 61,
+        "daily_window_end_days": 31,
+        "weekly_anchor_date": (
+            "date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7))"
+        ),
+        "weekly_offset_start": -1,
+        "weekly_offset_end": 14,
+        "fortnightly_offset_start": -5,
+        "fortnightly_offset_end": 3,
+        "monthly_offset_start": -3,
+        "monthly_offset_end": 2,
+    },
 }
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": (
@@ -113,15 +141,27 @@ def _read_dataset_query_lines(dataset_name: str) -> list[str]:
 
 
 def _render_dataset_sql(dataset_name: str) -> str:
-    """Render one dataset SQL file with the shared fragment text."""
+    """Render one dataset SQL file with the shared fragments and window parameters."""
 
     sql_text = DATASET_SQL_FILES[dataset_name].read_text(encoding="utf-8")
     if sql_text.endswith("\n"):
         sql_text = sql_text[:-1]
-    fragment_text_by_name = {
-        fragment_name: _read_fragment_text(fragment_name) for fragment_name in FRAGMENT_FILES
-    }
+    fragment_text_by_name = {}
+    for fragment_name in FRAGMENT_FILES:
+        fragment_parameters = None
+        if fragment_name == "deadline_dates" and dataset_name in DEADLINE_DATE_WINDOWS:
+            fragment_parameters = DEADLINE_DATE_WINDOWS[dataset_name]
+        fragment_text_by_name[fragment_name] = _render_fragment(fragment_name, fragment_parameters)
     return Template(sql_text).substitute(**fragment_text_by_name)
+
+
+def _render_fragment(fragment_name: str, fragment_parameters: Mapping[str, Any] | None) -> str:
+    """Read one shared fragment file and render it with optional parameters."""
+
+    fragment_text = _read_fragment_text(fragment_name)
+    if fragment_parameters is None:
+        return fragment_text
+    return Template(fragment_text).substitute(**fragment_parameters)
 
 
 def _read_fragment_text(fragment_name: str) -> str:
