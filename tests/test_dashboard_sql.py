@@ -36,18 +36,16 @@ class DashboardScaffoldTests(unittest.TestCase):
             "WHERE frequency = 'monthly'",
         )
 
-        for dashboard_path in (SCAFFOLD_PATH, GENERATED_DASHBOARD_PATH):
-            with self.subTest(dashboard_path=dashboard_path):
-                dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
-                workflow_status_sql = "".join(
-                    next(
-                        dataset["queryLines"]
-                        for dataset in dashboard["datasets"]
-                        if dataset["name"] == "workflow_status"
-                    )
-                )
-                for expected_deadline_window_fragment in expected_deadline_window_fragments:
-                    self.assertIn(expected_deadline_window_fragment, workflow_status_sql)
+        dashboard = json.loads(GENERATED_DASHBOARD_PATH.read_text(encoding="utf-8"))
+        workflow_status_sql = "".join(
+            next(
+                dataset["queryLines"]
+                for dataset in dashboard["datasets"]
+                if dataset["name"] == "workflow_status"
+            )
+        )
+        for expected_deadline_window_fragment in expected_deadline_window_fragments:
+            self.assertIn(expected_deadline_window_fragment, workflow_status_sql)
 
     def test_fortnightly_deadlines_start_at_first_deadline_date(self) -> None:
         recurrence_anchor_fragment = (
@@ -58,32 +56,30 @@ class DashboardScaffoldTests(unittest.TestCase):
             "d.frequency <> 'fortnightly' OR d.deadline_date >= d.first_deadline_date"
         )
 
-        for dashboard_path in (SCAFFOLD_PATH, GENERATED_DASHBOARD_PATH):
-            with self.subTest(dashboard_path=dashboard_path):
-                dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
-                dataset_sql_by_name = {
-                    dataset["name"]: "".join(dataset["queryLines"])
-                    for dataset in dashboard["datasets"]
-                }
-                self.assertEqual(
-                    dataset_sql_by_name["workflow_status"].count(recurrence_anchor_fragment),
-                    1,
-                )
-                self.assertEqual(
-                    dataset_sql_by_name["workflow_status"].count(eligible_deadline_fragment),
-                    1,
-                )
-                self.assertEqual(
-                    dataset_sql_by_name["sla_history"].count(recurrence_anchor_fragment),
-                    1,
-                )
-                self.assertEqual(
-                    dataset_sql_by_name["sla_history"].count(eligible_deadline_fragment),
-                    2,
-                )
+        dashboard = json.loads(GENERATED_DASHBOARD_PATH.read_text(encoding="utf-8"))
+        dataset_sql_by_name = {
+            dataset["name"]: "".join(dataset["queryLines"]) for dataset in dashboard["datasets"]
+        }
+        self.assertEqual(
+            dataset_sql_by_name["workflow_status"].count(recurrence_anchor_fragment),
+            1,
+        )
+        self.assertEqual(
+            dataset_sql_by_name["workflow_status"].count(eligible_deadline_fragment),
+            1,
+        )
+        self.assertEqual(
+            dataset_sql_by_name["sla_history"].count(recurrence_anchor_fragment),
+            1,
+        )
+        self.assertEqual(
+            dataset_sql_by_name["sla_history"].count(eligible_deadline_fragment),
+            2,
+        )
 
     def test_scaffold_references_are_stable_and_valid(self) -> None:
         scaffold = json.loads(SCAFFOLD_PATH.read_text(encoding="utf-8"))
+        built_dashboard = json.loads(GENERATED_DASHBOARD_PATH.read_text(encoding="utf-8"))
         expected_dataset_names = {
             "workflow_status",
             "run_history",
@@ -92,7 +88,7 @@ class DashboardScaffoldTests(unittest.TestCase):
         actual_dataset_names = {dataset["name"] for dataset in scaffold["datasets"]}
         self.assertEqual(actual_dataset_names, expected_dataset_names)
 
-        for dataset in scaffold["datasets"]:
+        for dataset in built_dashboard["datasets"]:
             dataset_sql = "".join(dataset["queryLines"])
             self.assertEqual(dataset_sql.count("FROM workflow_sla_config"), 1)
             self.assertEqual(dataset_sql.count("FROM workflow_job_api_state"), 1)
@@ -152,6 +148,7 @@ class DashboardScaffoldTests(unittest.TestCase):
         self.assertEqual(workflow_health_colours["Pending"], "#E69F00")
 
         scaffold_text = SCAFFOLD_PATH.read_text(encoding="utf-8")
+        built_dashboard_text = GENERATED_DASHBOARD_PATH.read_text(encoding="utf-8")
         required_sql_fragments = (
             "to_utc_timestamp",
             "LEAST(day_of_month, day(last_day(add_months(local_today, offset))))",
@@ -164,14 +161,14 @@ class DashboardScaffoldTests(unittest.TestCase):
             "workflow_run_api_state",
         )
         for required_sql_fragment in required_sql_fragments:
-            self.assertIn(required_sql_fragment, scaffold_text)
-        self.assertNotIn("system.", scaffold_text)
-        self.assertNotIn("date_sub(current_date(), 365)", scaffold_text)
-        self.assertNotIn("date_sub(local_today, 380)", scaffold_text)
-        self.assertNotIn("FROM deadline_dates WHERE", scaffold_text)
+            self.assertIn(required_sql_fragment, built_dashboard_text)
+        self.assertNotIn("system.", built_dashboard_text)
+        self.assertNotIn("date_sub(current_date(), 365)", built_dashboard_text)
+        self.assertNotIn("date_sub(local_today, 380)", built_dashboard_text)
+        self.assertNotIn("FROM deadline_dates WHERE", built_dashboard_text)
         for stale_terminal_state in ("'ERROR'", "'TIMED_OUT'", "'BLOCKED'"):
-            self.assertNotIn(stale_terminal_state, scaffold_text)
-        self.assertNotIn("),\nSELECT", scaffold_text)
+            self.assertNotIn(stale_terminal_state, built_dashboard_text)
+        self.assertNotIn("),\nSELECT", built_dashboard_text)
 
         for visualization_marker in CUSTOM_VISUALIZATION_FILES:
             self.assertEqual(scaffold_text.count(visualization_marker), 1)

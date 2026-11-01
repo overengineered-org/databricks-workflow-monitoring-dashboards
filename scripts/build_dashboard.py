@@ -1,4 +1,4 @@
-"""Build the Databricks dashboard JSON from the scaffold and Vega files."""
+"""Build the Databricks dashboard JSON from the scaffold, dataset SQL, and Vega files."""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ from typing import Any
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 DEFAULT_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
+DATASET_SQL_FILES = {
+    "workflow_status": REPOSITORY_ROOT / "src/dashboards/sql/workflow_status.sql",
+    "run_history": REPOSITORY_ROOT / "src/dashboards/sql/run_history.sql",
+    "sla_history": REPOSITORY_ROOT / "src/dashboards/sql/sla_history.sql",
+}
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": (
         REPOSITORY_ROOT / "src/visualizations/sla-delivery-calendar.vega.json"
@@ -27,12 +32,14 @@ CUSTOM_VISUALIZATION_FILES = {
 
 
 def build_dashboard(scaffold_path: Path, output_path: Path) -> None:
-    """Insert the custom Vega visualizations and write deterministic dashboard JSON."""
+    """Write the deterministic dashboard JSON built from the scaffold, SQL, and Vega files."""
 
     try:
         dashboard_document = json.loads(scaffold_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise ValueError(f"parse dashboard scaffold: {error}") from error
+
+    _inject_dataset_query_lines(dashboard_document)
 
     for visualization_marker, visualization_path in CUSTOM_VISUALIZATION_FILES.items():
         visualization_replacement_count = _replace_text_marker(
@@ -62,6 +69,48 @@ def build_dashboard(scaffold_path: Path, output_path: Path) -> None:
     except BaseException:
         temporary_output_path.unlink(missing_ok=True)
         raise
+
+
+def _inject_dataset_query_lines(dashboard_document: Any) -> None:
+    """Replace each scaffold dataset's queryLines with the lines from its SQL source file."""
+
+    datasets = dashboard_document.get("datasets")
+    if datasets is None:
+        return
+
+    scaffold_dataset_names = {dataset["name"] for dataset in datasets}
+    if scaffold_dataset_names != set(DATASET_SQL_FILES):
+        raise ValueError(
+            f"dashboard scaffold datasets {sorted(scaffold_dataset_names)} "
+            f"must match {sorted(DATASET_SQL_FILES)}"
+        )
+
+    for dataset_index, dataset in enumerate(datasets):
+        if "queryLines" in dataset:
+            raise ValueError(
+                f"dataset {dataset['name']} embeds queryLines in the scaffold; "
+                f"keep its SQL in {DATASET_SQL_FILES[dataset['name']]}"
+            )
+        rebuilt_dataset: dict[str, Any] = {}
+        for key, value in dataset.items():
+            rebuilt_dataset[key] = value
+            if key == "displayName":
+                rebuilt_dataset["queryLines"] = _read_dataset_query_lines(
+                    DATASET_SQL_FILES[dataset["name"]]
+                )
+        if "queryLines" not in rebuilt_dataset:
+            raise ValueError(f"dataset {dataset['name']} is missing displayName")
+        datasets[dataset_index] = rebuilt_dataset
+
+
+def _read_dataset_query_lines(sql_path: Path) -> list[str]:
+    """Split one dataset SQL file into dashboard queryLines, one line per element."""
+
+    sql_text = sql_path.read_text(encoding="utf-8")
+    if sql_text.endswith("\n"):
+        sql_text = sql_text[:-1]
+    lines = sql_text.split("\n")
+    return [line + "\n" for line in lines[:-1]] + [lines[-1]]
 
 
 def _load_custom_visualization(visualization_path: Path) -> str:
