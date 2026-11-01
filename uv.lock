@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "databricks-workflow-monitoring-dashboards"
+name = "databricks-jobs-monitoring-dashboard"
 version = "0.2.0"
 source = { virtual = "." }
 dependencies = [

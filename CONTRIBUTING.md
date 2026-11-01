@@ -8,8 +8,8 @@ Use this guide when changing the repository. To configure and deploy the dashboa
 From a fresh clone, create a focused branch:
 
 ```sh
-git clone https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards.git
-cd databricks-workflow-monitoring-dashboards
+git clone https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard.git
+cd databricks-jobs-monitoring-dashboard
 git switch -c <feat-or-fix>/<short-name>
 ```
 

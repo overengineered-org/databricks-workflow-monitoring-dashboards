@@ -14,7 +14,7 @@ Create a new copy from the release tag, then replace this folder:
 ```sh
 printf '%s\n' '{"project_name": "workflow_monitoring"}' > /tmp/wm-upgrade-answers.json
 
-databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
+databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
   --tag <new-tag> \
   --template-dir template \
   --config-file /tmp/wm-upgrade-answers.json \

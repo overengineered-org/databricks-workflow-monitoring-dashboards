@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-runner_image="databricks-workflow-monitoring-dashboards-act:local"
+runner_image="databricks-jobs-monitoring-dashboard-act:local"
 runner_container_label="org.overengineered.workflow-monitoring.local-act=true"
 runner_repository_hash_label="org.overengineered.workflow-monitoring.repository-hash"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
