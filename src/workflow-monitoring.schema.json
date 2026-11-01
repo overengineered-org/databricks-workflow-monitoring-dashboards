@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards/src/workflow-monitoring.schema.json",
+  "$id": "https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard/src/workflow-monitoring.schema.json",
   "$comment": "This schema powers editor completion and the frequency-specific field rules. Python rechecks the schedule fields and checks the IANA timezones and the duplicate job IDs at load time.",
   "title": "Databricks workflow monitoring configuration",
   "type": "object",

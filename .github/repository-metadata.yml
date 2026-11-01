@@ -1,15 +1,18 @@
 # GitHub does not apply this file automatically. Maintainers use it as the
 # source of truth for the repository About section and social preview.
-name: databricks-workflow-monitoring-dashboards
+name: databricks-jobs-monitoring-dashboard
 description: >-
-  Open-source Databricks Workflow Monitoring Dashboards for Lakeflow Jobs SLA
-  monitoring and reliability trends using Jobs API polling, AI/BI dashboards,
-  and Declarative Automation Bundles (Asset Bundles).
+  Databricks jobs monitoring dashboard with SLA tracking. Monitors Lakeflow
+  Jobs failures, run duration, and deadlines through the Jobs API and an AI/BI
+  dashboard. Deploys as a Databricks Asset Bundle.
 homepage: ""
 topics:
   - ai-bi-dashboard
   - databricks
   - databricks-asset-bundles
+  - databricks-dashboard
+  - databricks-jobs
+  - databricks-monitoring
   - job-monitoring
   - jobs-api
   - lakeflow-jobs

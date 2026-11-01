@@ -1,4 +1,4 @@
-# Databricks Workflow Monitoring Dashboards
+# Databricks Jobs Monitoring Dashboard
 
 A deployable Databricks bundle that monitors selected Databricks
 [Lakeflow Jobs](https://docs.databricks.com/aws/en/jobs/monitor). It polls the Jobs API every
@@ -40,7 +40,7 @@ You need:
 | Databricks CLI | 1.22.1 |
 
 ```sh
-databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
+databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
   --tag v0.2.0 \
   --template-dir template \
   --output-dir .

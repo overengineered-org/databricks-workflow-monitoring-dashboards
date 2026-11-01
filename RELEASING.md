@@ -59,7 +59,7 @@ The same values are used in `tests/test_bundle_template.py`:
 
 ```sh
 DATABRICKS_HOST=https://example.invalid DATABRICKS_TOKEN=fake \
-databricks bundle init https://github.com/overengineered-org/databricks-workflow-monitoring-dashboards \
+databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
   --tag v<version> --template-dir template --output-dir /tmp/check
 ```
 
