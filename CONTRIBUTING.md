@@ -69,12 +69,16 @@ warehouse IDs, or organization-specific Job details.
 | Bundle template prompts | `template/databricks_template_schema.json` |
 | Product files copied into the template | `scripts/build_template.py` |
 | Dashboard | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
+| Dashboard dataset SQL | `src/dashboards/sql/*.sql` |
+| Shared dashboard SQL fragments | `src/dashboards/sql/fragments/*.sql` |
+| Fixed-date regression SQL | `src/dashboards/sql/regression.sql` |
+| Dashboard SQL constants | `scripts/dashboard_constants.py` |
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 
 Never edit the built dashboard or the copied product files under
 `template/template/{{.project_name}}/workflow_monitoring/` directly. Maintainers change the
-dashboard scaffold or a Vega-Lite file, then run:
+dashboard scaffold, a dataset SQL file, or a Vega-Lite file, then run:
 
 ```sh
 uv run python scripts/build_dashboard.py
