@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from string import Template
 from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,9 @@ DATASET_SQL_FILES = {
     "workflow_status": REPOSITORY_ROOT / "src/dashboards/sql/workflow_status.sql",
     "run_history": REPOSITORY_ROOT / "src/dashboards/sql/run_history.sql",
     "sla_history": REPOSITORY_ROOT / "src/dashboards/sql/sla_history.sql",
+}
+FRAGMENT_FILES = {
+    "weekday_number": REPOSITORY_ROOT / "src/dashboards/sql/fragments/weekday_number.sql",
 }
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": (
@@ -95,22 +99,38 @@ def _inject_dataset_query_lines(dashboard_document: Any) -> None:
         for key, value in dataset.items():
             rebuilt_dataset[key] = value
             if key == "displayName":
-                rebuilt_dataset["queryLines"] = _read_dataset_query_lines(
-                    DATASET_SQL_FILES[dataset["name"]]
-                )
+                rebuilt_dataset["queryLines"] = _read_dataset_query_lines(dataset["name"])
         if "queryLines" not in rebuilt_dataset:
             raise ValueError(f"dataset {dataset['name']} is missing displayName")
         datasets[dataset_index] = rebuilt_dataset
 
 
-def _read_dataset_query_lines(sql_path: Path) -> list[str]:
-    """Split one dataset SQL file into dashboard queryLines, one line per element."""
+def _read_dataset_query_lines(dataset_name: str) -> list[str]:
+    """Render one dataset SQL file and split it into dashboard queryLines."""
 
-    sql_text = sql_path.read_text(encoding="utf-8")
+    lines = _render_dataset_sql(dataset_name).split("\n")
+    return [line + "\n" for line in lines[:-1]] + [lines[-1]]
+
+
+def _render_dataset_sql(dataset_name: str) -> str:
+    """Render one dataset SQL file with the shared fragment text."""
+
+    sql_text = DATASET_SQL_FILES[dataset_name].read_text(encoding="utf-8")
     if sql_text.endswith("\n"):
         sql_text = sql_text[:-1]
-    lines = sql_text.split("\n")
-    return [line + "\n" for line in lines[:-1]] + [lines[-1]]
+    fragment_text_by_name = {
+        fragment_name: _read_fragment_text(fragment_name) for fragment_name in FRAGMENT_FILES
+    }
+    return Template(sql_text).substitute(**fragment_text_by_name)
+
+
+def _read_fragment_text(fragment_name: str) -> str:
+    """Read one shared fragment file without its trailing newline."""
+
+    fragment_text = FRAGMENT_FILES[fragment_name].read_text(encoding="utf-8")
+    if fragment_text.endswith("\n"):
+        fragment_text = fragment_text[:-1]
+    return fragment_text
 
 
 def _load_custom_visualization(visualization_path: Path) -> str:

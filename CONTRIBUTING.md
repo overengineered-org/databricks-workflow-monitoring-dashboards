@@ -70,6 +70,7 @@ warehouse IDs, or organization-specific Job details.
 | Product files copied into the template | `scripts/build_template.py` |
 | Dashboard | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Dashboard dataset SQL | `src/dashboards/sql/*.sql` |
+| Shared dashboard SQL fragments | `src/dashboards/sql/fragments/*.sql` |
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 

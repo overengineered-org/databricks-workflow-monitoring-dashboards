@@ -42,7 +42,7 @@ today_counts AS (
 ),
 workflow_local_dates AS (
   SELECT r.*, to_date(from_utc_timestamp(current_timestamp(), timezone)) AS local_today,
-    CASE day_of_week WHEN 'sunday' THEN 1 WHEN 'monday' THEN 2 WHEN 'tuesday' THEN 3 WHEN 'wednesday' THEN 4 WHEN 'thursday' THEN 5 WHEN 'friday' THEN 6 WHEN 'saturday' THEN 7 END AS target_day
+    ${weekday_number} AS target_day
   FROM monitored_workflows r
 ),
 -- Fortnightly rows keep a pre-anchor boundary for the first period; only the anchor and later dates are eligible.
