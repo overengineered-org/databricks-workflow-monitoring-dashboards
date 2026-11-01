@@ -123,6 +123,10 @@ if [[ "$release_action" == "--help" || "$release_action" == "-h" ]]; then
 fi
 
 if [[ "$release_action" == "--publish-on-merge" ]]; then
+  if [[ $# -gt 1 ]]; then
+    show_usage >&2
+    exit 2
+  fi
   publish_on_merge
   exit 0
 fi
@@ -161,7 +165,7 @@ fi
 assert_no_existing_tag "$release_tag"
 assert_no_existing_release "$release_tag"
 
-gh auth status
+gh auth status >/dev/null
 scripts/run-local-validation.sh
 scan_for_secrets
 

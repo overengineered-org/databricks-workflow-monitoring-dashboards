@@ -29,23 +29,24 @@ the "Upgrade steps" release notes section.
 3. Run `uv run python scripts/build_template.py` so `VERSION` and the template copy match.
 4. Update the README `--tag` and the schema URL tag to `v<version>`.
 5. Merge the approved pull request with squash. The merge publishes `v<version>`.
-6. Use a clean `main` checkout matching `origin/main`.
 
 ## 3. Check without publishing
 
-Replace `<version>` with the version from `pyproject.toml`:
+On the PR branch, run the local gate from [CONTRIBUTING.md](CONTRIBUTING.md#3-validate):
 
 ```sh
-./scripts/release.sh --check v<version>
+scripts/run-local-validation.sh
 ```
 
-This is the local pre-merge check. It validates the exact commit. It creates no tag or release.
+This is the local pre-merge check. It creates no tag or release.
 
 ## 4. Publish if the workflow fails
 
-If the `release.yml` workflow does not publish, run the fallback on the clean `main` checkout:
+If the `release.yml` workflow does not publish, use a clean `main` checkout matching
+`origin/main`. Replace `<version>` with the version from `pyproject.toml`:
 
 ```sh
+./scripts/release.sh --check v<version>
 ./scripts/release.sh --publish v<version>
 ```
 
