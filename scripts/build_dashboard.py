@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from collections.abc import Mapping
@@ -23,11 +24,17 @@ FRAGMENT_FILES = {
     "deadline_instant": REPOSITORY_ROOT / "src/dashboards/sql/fragments/deadline_instant.sql",
     "deadline_status": REPOSITORY_ROOT / "src/dashboards/sql/fragments/deadline_status.sql",
 }
+REGRESSION_SQL_PATH = REPOSITORY_ROOT / "src/dashboards/sql/regression.sql"
+
+# The weekly branch anchors at a target weekday, then steps by week offsets.
+CURRENT_WEEKLY_ANCHOR_DATE = "date_add(local_today, -pmod(dayofweek(local_today) - target_day, 7))"
+HISTORY_WEEKLY_ANCHOR_DATE = "date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7))"
+
 DEADLINE_DATE_WINDOWS = {
     "workflow_status": {
         "daily_window_start_days": 2,
         "daily_window_end_days": 1,
-        "weekly_anchor_date": "date_add(local_today, -pmod(dayofweek(local_today) - target_day, 7))",
+        "weekly_anchor_date": CURRENT_WEEKLY_ANCHOR_DATE,
         "weekly_offset_start": -2,
         "weekly_offset_end": 1,
         "fortnightly_offset_start": -2,
@@ -38,9 +45,7 @@ DEADLINE_DATE_WINDOWS = {
     "sla_history": {
         "daily_window_start_days": 61,
         "daily_window_end_days": 31,
-        "weekly_anchor_date": (
-            "date_add(date_sub(local_today, 61), pmod(target_day - dayofweek(date_sub(local_today, 61)), 7))"
-        ),
+        "weekly_anchor_date": HISTORY_WEEKLY_ANCHOR_DATE,
         "weekly_offset_start": -1,
         "weekly_offset_end": 14,
         "fortnightly_offset_start": -5,
@@ -48,6 +53,30 @@ DEADLINE_DATE_WINDOWS = {
         "monthly_offset_start": -3,
         "monthly_offset_end": 2,
     },
+}
+# The regression history window covers only the fixed test rows, so its daily end is shorter
+# than the sla_history display window.
+REGRESSION_DEADLINE_DATE_WINDOWS = {
+    "current_deadline_dates": DEADLINE_DATE_WINDOWS["workflow_status"],
+    "history_deadline_dates": {
+        "daily_window_start_days": 61,
+        "daily_window_end_days": 2,
+        "weekly_anchor_date": HISTORY_WEEKLY_ANCHOR_DATE,
+        "weekly_offset_start": -1,
+        "weekly_offset_end": 14,
+        "fortnightly_offset_start": -5,
+        "fortnightly_offset_end": 3,
+        "monthly_offset_start": -3,
+        "monthly_offset_end": 2,
+    },
+}
+DEADLINE_INSTANT_PARAMETERS = {"timezone": "timezone"}
+DEADLINE_STATUS_PARAMETERS = {"run_identity": "run_id", "current_instant": "current_timestamp()"}
+# The regression fixes the instants inline, so it uses UTC and its own now column.
+REGRESSION_DEADLINE_INSTANT_PARAMETERS = {"timezone": "'UTC'"}
+REGRESSION_DEADLINE_STATUS_PARAMETERS = {
+    "run_identity": "run_end_time",
+    "current_instant": "d.current_instant_utc",
 }
 CUSTOM_VISUALIZATION_FILES = {
     "{{SLA_DELIVERY_CALENDAR_VEGA}}": (
@@ -145,16 +174,47 @@ def _read_dataset_query_lines(dataset_name: str) -> list[str]:
 def _render_dataset_sql(dataset_name: str) -> str:
     """Render one dataset SQL file with the shared fragments and window parameters."""
 
-    sql_text = DATASET_SQL_FILES[dataset_name].read_text(encoding="utf-8")
+    fragment_specification = {
+        "weekday_number": ("weekday_number", None),
+        "deadline_instant": ("deadline_instant", DEADLINE_INSTANT_PARAMETERS),
+        "deadline_status": ("deadline_status", DEADLINE_STATUS_PARAMETERS),
+    }
+    if dataset_name in DEADLINE_DATE_WINDOWS:
+        fragment_specification["deadline_dates"] = (
+            "deadline_dates",
+            DEADLINE_DATE_WINDOWS[dataset_name],
+        )
+    return _render_sql_source(DATASET_SQL_FILES[dataset_name], fragment_specification)
+
+
+def render_regression_sql() -> str:
+    """Render the fixed-date regression SQL from the shared fragments."""
+
+    fragment_specification = {
+        "weekday_number": ("weekday_number", None),
+        "deadline_instant": ("deadline_instant", REGRESSION_DEADLINE_INSTANT_PARAMETERS),
+        "deadline_status": ("deadline_status", REGRESSION_DEADLINE_STATUS_PARAMETERS),
+    }
+    for placeholder, window in REGRESSION_DEADLINE_DATE_WINDOWS.items():
+        fragment_specification[placeholder] = ("deadline_dates", window)
+    return _render_sql_source(REGRESSION_SQL_PATH, fragment_specification)
+
+
+def _render_sql_source(
+    sql_path: Path,
+    fragment_specification: Mapping[str, tuple[str, Mapping[str, Any] | None]],
+) -> str:
+    """Render one SQL source file by substituting its shared fragments."""
+
+    fragment_text_by_placeholder = {}
+    for placeholder, (fragment_name, fragment_parameters) in fragment_specification.items():
+        fragment_text_by_placeholder[placeholder] = _render_fragment(
+            fragment_name, fragment_parameters
+        )
+    sql_text = sql_path.read_text(encoding="utf-8")
     if sql_text.endswith("\n"):
         sql_text = sql_text[:-1]
-    fragment_text_by_name = {}
-    for fragment_name in FRAGMENT_FILES:
-        fragment_parameters = None
-        if fragment_name == "deadline_dates" and dataset_name in DEADLINE_DATE_WINDOWS:
-            fragment_parameters = DEADLINE_DATE_WINDOWS[dataset_name]
-        fragment_text_by_name[fragment_name] = _render_fragment(fragment_name, fragment_parameters)
-    return Template(sql_text).substitute(**fragment_text_by_name)
+    return Template(sql_text).substitute(**fragment_text_by_placeholder)
 
 
 def _render_fragment(fragment_name: str, fragment_parameters: Mapping[str, Any] | None) -> str:
@@ -216,8 +276,18 @@ def _replace_text_marker(document: Any, marker: str, replacement_text: str) -> i
 
 
 def main() -> int:
-    """Build the tracked dashboard from the tracked scaffold."""
+    """Build the tracked dashboard, or print the rendered regression SQL."""
 
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--regression-sql",
+        action="store_true",
+        help="Print the fixed-date regression SQL rendered from the shared fragments.",
+    )
+    arguments = parser.parse_args()
+    if arguments.regression_sql:
+        print(render_regression_sql())
+        return 0
     build_dashboard(DEFAULT_SCAFFOLD_PATH, DEFAULT_DASHBOARD_PATH)
     print(f"built dashboard: {DEFAULT_DASHBOARD_PATH}")
     return 0
