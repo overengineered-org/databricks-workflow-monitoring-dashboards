@@ -69,14 +69,17 @@ The maintainer tests on Databricks Free Edition. Never do anything that can cost
 ## Pipelines
 
 GitHub runs `.github/workflows/validate.yml` for each pull request and each push to `main`.
-`scripts/run-local-validation.sh` runs the same file locally with `act`.
+GitHub also runs `.github/workflows/release.yml` for each push to `main`.
+`scripts/run-local-validation.sh` runs `validate.yml` locally with `act`.
 
 Cost guardrails are rules:
 
 - Every job uses exactly `runs-on: ubuntu-latest`. Never use a larger runner, a runner group,
   labels, macOS, Windows, a GPU runner, or a self-hosted runner.
 - Every workflow sets `permissions: contents: read`, and every job sets `timeout-minutes: 15`.
+- The `release` job in `release.yml` may set `contents: write`.
 - Use `concurrency` with `cancel-in-progress: true`.
+- `release.yml` uses `cancel-in-progress: false`, so a publish never stops halfway.
 - Never use secrets or `pull_request_target`.
 - Never upload artifacts.
 - Use no paid Marketplace actions and no third-party services.
