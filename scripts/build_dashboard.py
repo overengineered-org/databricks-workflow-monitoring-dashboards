@@ -20,6 +20,8 @@ DATASET_SQL_FILES = {
 FRAGMENT_FILES = {
     "weekday_number": REPOSITORY_ROOT / "src/dashboards/sql/fragments/weekday_number.sql",
     "deadline_dates": REPOSITORY_ROOT / "src/dashboards/sql/fragments/deadline_dates.sql",
+    "deadline_instant": REPOSITORY_ROOT / "src/dashboards/sql/fragments/deadline_instant.sql",
+    "deadline_status": REPOSITORY_ROOT / "src/dashboards/sql/fragments/deadline_status.sql",
 }
 DEADLINE_DATE_WINDOWS = {
     "workflow_status": {

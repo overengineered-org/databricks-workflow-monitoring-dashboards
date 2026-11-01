@@ -51,7 +51,7 @@ deadline_dates AS (
 ${deadline_dates}
 ),
 deadline_instants AS (
-  SELECT *, to_utc_timestamp(to_timestamp(concat(CAST(deadline_date AS STRING), ' ', completion_time), 'yyyy-MM-dd HH:mm'), timezone) AS deadline_utc
+  SELECT *, ${deadline_instant} AS deadline_utc
   FROM deadline_dates
 ),
 deadline_periods AS (
@@ -61,7 +61,7 @@ deadline_periods AS (
 -- A period is met only when a successful run completed before its deadline.
 deadline_results AS (
   SELECT d.configured_order, d.deadline_utc,
-    CASE WHEN COUNT(DISTINCT CASE WHEN r.result_state = 'SUCCEEDED' THEN r.run_id END) > 0 THEN 'Met' WHEN d.deadline_utc <= current_timestamp() THEN 'Missed' ELSE 'Pending' END AS deadline_status
+    ${deadline_status} AS deadline_status
   FROM deadline_periods d
   LEFT JOIN workflow_runs r ON d.configured_order = r.configured_order AND r.run_end_time > d.previous_deadline_utc AND r.run_end_time <= d.deadline_utc
   WHERE d.previous_deadline_utc IS NOT NULL AND (d.frequency <> 'fortnightly' OR d.deadline_date >= d.first_deadline_date)
