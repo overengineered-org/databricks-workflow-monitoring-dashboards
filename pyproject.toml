@@ -1,6 +1,6 @@
 [project]
 name = "databricks-jobs-monitoring-dashboard"
-version = "0.3.0"
+version = "0.3.1"
 description = "Generate a Jobs API-backed Databricks dashboard for workflow SLA, reliability, and trends."
 readme = "README.md"
 license = "Apache-2.0"

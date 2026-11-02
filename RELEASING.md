@@ -53,6 +53,10 @@ If the `release.yml` workflow does not publish, use a clean `main` checkout matc
 
 The script creates the tag and immutable GitHub Release, then verifies the published commit.
 
+If GitHub answers `tag_name was used by an immutable release`, a deleted release once used that tag
+name. GitHub reserves it forever, so neither the workflow nor the script can publish it. Merge a new
+version-bump pull request with the next patch version instead.
+
 ## 5. Test the published tag
 
 The pinned CLI can ask for credentials during `bundle init`. Fake values keep the render offline.
