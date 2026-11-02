@@ -27,6 +27,12 @@ rm -rf /tmp/wm-upgrade /tmp/wm-upgrade-answers.json
 
 `--delete` removes product files that the new release no longer contains.
 
+If you use the `workflow-monitoring` CLI, install the same release tag:
+
+```sh
+uv tool install --force git+https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard@<new-tag>
+```
+
 Keep your configuration. The following user-owned files can need a manual change in a new
 version:
 
