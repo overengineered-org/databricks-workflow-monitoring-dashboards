@@ -6,3 +6,6 @@ __pycache__/
 .databricks/
 # A killed select-jobs run can leave its temporary config copy.
 .workflow-monitoring.*.yml
+# Personal agent instructions, for example an import of docs/maintainers.md.
+CLAUDE.local.md
+AGENTS.override.md

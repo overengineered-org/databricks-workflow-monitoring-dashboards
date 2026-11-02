@@ -16,38 +16,25 @@ git switch -c <feat-or-fix>/<short-name>
 Use `feat/`, `fix/`, `docs/`, or `chore/`. In an existing clone, update from `origin/main`
 before creating the branch.
 
-### Local agent setup (macOS and Linux)
+### Tools and agents
 
-Codex reads `AGENTS.md`. `CLAUDE.md` imports that same file for Claude Code, including versions
-that do not load `AGENTS.md` directly. Start either agent from the repository root. Keep project
-rules in `AGENTS.md`, not in two separate copies.
-The Codex project environment is defined in `.codex/environments/environment.toml`. It runs
-`uv sync --locked` when Codex creates a worktree and exposes Bootstrap, Smoke checks, and Full
-local gate actions. The full gate uses the same wrapper as section 3.
-
-The local checks need the Python version in `requires-python` in `pyproject.toml` and the
-`uv` version pinned in `.act/Dockerfile`.
-Users need the Databricks CLI, uv, and Git. They run the `workflow-monitoring` wrapper in
-`src/workflow_monitoring_cli.py` from their clone with `uv run`.
-The required local Act gate also needs Git, `act`, and a running Docker
-daemon. Start Docker Desktop on macOS or the Docker daemon on Linux before running the gate.
-The Act image supplies `jq` and the pinned Databricks CLI; they are not host
-setup requirements for this gate.
-
-From the repository root, prepare the ignored Python environment and check the other local
-prerequisites:
+You need [uv](https://docs.astral.sh/uv/) and Git. The full gate also needs Docker and
+[act](https://nektosact.com). The unit tests need no Databricks workspace.
 
 ```sh
 uv sync --locked
-act --version
-docker info >/dev/null
 ```
 
-Run the smoke checks and full gate in [section 3](#3-validate). No Databricks workspace login or
-profile is needed for these local checks. Live Databricks validation is separate and requires a
-profile chosen by the user. If Docker or `act` is unavailable, repair it and report the local
-gate as not run. If no profile is chosen, report live validation as not run; never select one
-automatically.
+Every coding agent reads [AGENTS.md](AGENTS.md). Codex, Cursor, GitHub Copilot, Jules, Amp, and
+Zed read it directly, and `CLAUDE.md` imports it for Claude Code. Keep project rules in
+`AGENTS.md` only.
+
+To work in a container, open the repository in a dev container, for example in GitHub Codespaces
+or VS Code. `.devcontainer/` installs the pinned uv and Databricks CLI and runs
+`uv sync --locked`.
+
+Users of the dashboard need the Databricks CLI, uv, and Git. They run the `workflow-monitoring`
+wrapper in `src/workflow_monitoring_cli.py` from their clone with `uv run`.
 
 Before a large behavior, configuration, or dashboard design change:
 
@@ -98,37 +85,36 @@ run `uv lock` and commit `pyproject.toml` with `uv.lock`.
 
 ## 3. Validate
 
-Use targeted checks while editing:
+Run the fast checks for every change. They need only uv:
 
 ```sh
-uv run ruff format --check .
-uv run ruff check .
-uv run python -m unittest discover -s tests -v
+scripts/check.sh
 ```
 
-Before opening a pull request, run the required local gate:
+They check the lockfile, formatting, lint, tests, the built dashboard, and banned characters. The
+`validate` check on GitHub runs the same script.
+
+When Docker and `act` are available, also run the full gate. It runs the GitHub workflow in the
+repository's fixed Act image:
 
 ```sh
 scripts/run-local-validation.sh
 ```
 
-The wrapper uses the repository's fixed Act image and retained checkout-scoped container.
-The `validate` check must pass on each pull request.
-
-Live Databricks validation is optional unless a maintainer requests it. Every live command must
-use the selected profile as `--profile <name>`.
+If you cannot run it, say so in the pull request. Live Databricks validation is optional unless a
+maintainer asks for it. It must use a profile that the human chose.
 
 ## 4. Dependency updates
 
 Dependabot opens grouped weekly pull requests for `uv` and GitHub Actions. The 7-day cooldown
-matches the #43 rule: only releases at least 7 days old are proposed.
+means that only releases at least 7 days old are proposed.
 
 A `jsonschema` or `pyyaml` bump fails `test_collector_environment_pins_match_uv_lock`. Fix it by
 pushing the collector Job pin change to the Dependabot branch.
 
 A Databricks CLI bump fails `test_bundle_cli_minimum_matches_wrapper_and_act_pin`. Fix it by
 bumping the CLI in `.act/Dockerfile`, the `databricks.yml` minimum, `MINIMUM_DATABRICKS_CLI_VERSION`
-in the wrapper, and the README table, with #43 rules.
+in the wrapper, and the README table.
 
 Docker image tools are bumped by hand. Review a major update by its release notes.
 
@@ -151,13 +137,7 @@ git push --force-with-lease
 
 ## 6. Open the pull request
 
-Include:
-
-- Why the change is needed
-- What changed
-- Exact validation results
-- Screenshots for dashboard changes
-- Anything not validated
+Fill in the pull request template. Add screenshots for dashboard changes.
 
 Use a conventional commit subject of 50 characters or fewer. Pull requests are squash-merged
 after approval.

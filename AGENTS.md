@@ -1,151 +1,119 @@
 # Agent guide
 
-Read this guide before changing repository files.
-Use `CONTRIBUTING.md` for local setup and validation commands.
+This file is for every coding agent and every human contributor. Codex, Cursor, GitHub Copilot,
+Jules, Amp, Zed, and other tools read `AGENTS.md` directly. `CLAUDE.md` imports it for Claude
+Code. Keep project rules here, in one copy.
 
-## Personal Git strategy
+[CONTRIBUTING.md](CONTRIBUTING.md) explains the same workflow for humans.
+[docs/maintainers.md](docs/maintainers.md) holds extra rules for maintainers. Contributors do not
+need it.
 
-These rules are mandatory for repository work.
+## Project
 
-### Before editing
+This repository is a Databricks bundle. A Python collector polls the Jobs API into Delta tables,
+and an AI/BI dashboard reads them. The `workflow-monitoring` wrapper in
+`src/workflow_monitoring_cli.py` helps adopters tick Jobs and deploy.
 
-- Verify `pwd`, `git status -sb`, current branch, remotes, and worktrees.
-- Start from current `origin/main` in a fresh worktree when possible.
-- Use a clear `feat/`, `fix/`, `chore/`, or `docs/` branch name.
-- Keep ownership explicit. Stage explicit paths and preserve unrelated changes.
-- Sign off every commit with `git commit -s` (Developer Certificate of Origin, #38).
+| Path | Content |
+| --- | --- |
+| `databricks.yml`, `resources/` | Bundle definition |
+| `workflow-monitoring.yml` | Monitored Jobs. Upstream, it lists no Jobs. |
+| `src/` | Collector, config rules, schema, wrapper, dashboard sources |
+| `scripts/` | Dashboard build, checks, release |
+| `tests/` | Unit tests. They need no Databricks workspace. |
 
-### Pull requests
+## Setup
 
-- Push a branch and open a pull request for normal work.
-- Do not merge a Dependabot pull request without maintainer approval. Treat it like any other
-  pull request.
-- Do not push to `main` without explicit approval in the current request.
-- Before merging, recheck the head, reviews, threads, checks, `origin/main`, and mergeability.
-- Treat merge, deploy, and production writes as separate approvals.
-- Use GitHub CLI. Never run `gh auth refresh` unless explicitly requested.
+```sh
+uv sync --locked
+```
 
-If GitHub fails only inside the sandbox, retry that command with escalation before reporting a
-blocker.
+## Checks
 
-### Merge and proof
+Run the fast checks for every change. They need only uv:
 
-- Squash-merge only after a real review body or explicit approval.
-- After conflicts, rebase on current `origin/main`, validate, then use `--force-with-lease`.
-- After merge, verify the merged head, main, related closure, and safe cleanup.
-- Separate local, GitHub, backend, visible-device, deployed, and live proof.
-- Never claim stronger proof than the evidence.
+```sh
+scripts/check.sh
+```
 
-## Dashboard project rules
-
-### Source files
-
-- Use fake account values in upstream configuration and generated dashboards.
-- Adopter repositories may track their own configuration under their security policy.
-- Keep repository metadata aligned with the GitHub About section, topics, and social preview.
-- Edit the dashboard scaffold, then run the generator. Never edit the generated dashboard.
-
-### Validation and language
-
-- Keep live SQL validation read-only. Do not create dummy tables or insert test rows.
-- Empty results prove SQL syntax, fields, and access, not metric correctness.
-- Use simplified technical English.
-- Comment non-obvious intent and constraints only.
-- Do not use em dashes in code, comments, documentation, or commit messages.
-
-### Live Databricks cost
-
-The maintainer tests on Databricks Free Edition. Never do anything that can cost money.
-
-- Run only live commands that start no compute. Examples: `databricks bundle validate` and
-  read-only list or get API calls.
-- Do not start a SQL warehouse, run a Job or notebook, or deploy a bundle without approval for
-  that command in the current request.
-- Free Edition compute has a fair-usage quota. Above the quota, compute stops for the rest of
-  the day.
-- Never use a paid workspace for testing.
-- Report each skipped live check as not run, with the reason.
-
-## Pipelines
-
-GitHub runs `.github/workflows/validate.yml` for each pull request and each push to `main`.
-GitHub also runs `.github/workflows/release.yml` for each push to `main`.
-`scripts/run-local-validation.sh` runs `validate.yml` locally with `act`.
-
-Cost guardrails are rules:
-
-- Every job uses exactly `runs-on: ubuntu-latest`. Never use a larger runner, a runner group,
-  labels, macOS, Windows, a GPU runner, or a self-hosted runner.
-- Every workflow sets `permissions: contents: read`, and every job sets `timeout-minutes: 15`.
-- The `release` job in `release.yml` may set `contents: write`.
-- Use `concurrency` with `cancel-in-progress: true`.
-- `release.yml` uses `cancel-in-progress: false`, so a publish never stops halfway.
-- Never use secrets or `pull_request_target`.
-- Never upload artifacts.
-- Use no paid Marketplace actions and no third-party services.
-- Pin every `uses:` line to a full commit SHA, with the version in a comment.
-- Guard each tool install step with `if: ${{ !env.ACT }}`, so local `act` runs keep the fixed
-  image.
-- `runner-guard` is the first job in each workflow. Every other job has `needs: runner-guard`.
-- Keep `.github/workflows/runner-guard.yml` and the `runner-guard` job in `validate.yml`.
-
-Run the repository-specific local gate through its wrapper:
+The full gate runs the GitHub workflow in Docker with `act`. Run it when Docker and `act` are
+available:
 
 ```sh
 scripts/run-local-validation.sh
 ```
 
-- The wrapper selects the host architecture and rebuilds the fixed image.
-- It reuses the labelled Act container while its image and checkout are current.
-- It removes only dangling images.
-- Do not bypass the wrapper for the standard local gate.
+GitHub runs the same workflow on each pull request. If you cannot run the full gate, say so in the
+pull request. Never claim a check that you did not run.
 
-If Docker, `act`, or the local image is unavailable, repair the local gate and record it as not
-run. Preserve the wrapper command and outcome as evidence.
+## Project rules
 
-Live Databricks checks run locally only:
+### Source files
 
-- Never run live Databricks checks on GitHub.
-- Keep `.act/workflows/databricks-validate.yml` local.
+- Use fake account values in all tracked files: no workspace URL, workspace ID, warehouse ID,
+  profile, token, or real Job ID.
+- Edit the dashboard scaffold, a dataset SQL file, or a Vega-Lite file, then run
+  `uv run python scripts/build_dashboard.py`. Never edit `src/dashboards/workflow-monitoring.lvdash.json`
+  by hand.
+- Keep repository metadata aligned with `.github/repository-metadata.yml`.
 
-## Change quality
+### Language
 
-- Diagnose first, then make the smallest durable change that fully meets the current requirement.
-- Use established libraries and tools where suitable.
-- Do not add compatibility layers or unfinished stopgaps.
-- Keep names intention-revealing and domain-specific.
-- Fix all issues found during the session, while keeping unrelated scope explicit.
+- Use simplified technical English: short sentences, active voice.
+- Comment non-obvious intent and constraints only.
+- Do not use em dashes in code, comments, documentation, or commit messages.
 
-## Scope discipline
+### Databricks workspaces cost money
 
-Change only what the issue or the prompt asks for.
+- Run only live commands that start no compute, for example `databricks bundle validate` and
+  read-only list or get calls.
+- Do not deploy a bundle, run a Job or notebook, or start a SQL warehouse unless the human asks
+  for that command in the current request.
+- Never pick a Databricks profile. Ask the human, or use the one they named.
+- Keep live SQL validation read-only. Do not create tables or insert test rows.
+- Report each skipped live check as not run, with the reason.
 
-- Do not rename or move a name that deployed resources or users depend on, unless the request
-  says so. This includes bundle resource keys, Job task keys, Job and dashboard names, table and
-  column names, CLI flags, config fields, and file paths that resources reference.
-- If a rename or a refactor looks useful, propose it in the pull request body. Do not do it.
-- In the pull request body, list every change that the request did not name, with its reason.
-  Write "None" when there are none.
+### GitHub Actions cost guardrails
+
+- Every job uses exactly `runs-on: ubuntu-latest`. Never use a larger runner, a runner group,
+  labels, macOS, Windows, a GPU runner, or a self-hosted runner.
+- Every workflow sets `permissions: contents: read`, and every job sets `timeout-minutes: 15`.
+  The `release` job in `release.yml` may set `contents: write`.
+- Use `concurrency` with `cancel-in-progress: true`. `release.yml` uses `false`, so a publish
+  never stops halfway.
+- Never use secrets, `pull_request_target`, artifact uploads, paid Marketplace actions, or
+  third-party services.
+- Pin every `uses:` line to a full commit SHA, with the version in a comment.
+- Guard each tool install step with `if: ${{ !env.ACT }}`, so local `act` runs keep the fixed
+  image.
+- `runner-guard` is the first job in each workflow. Every other job has `needs: runner-guard`.
+- Live Databricks checks never run on GitHub. `.act/workflows/databricks-validate.yml` is local.
+
+## Changes and pull requests
+
+- Work on a branch named `feat/`, `fix/`, `docs/`, or `chore/`. Never push to `main`.
+- Sign off every commit with `git commit -s` (Developer Certificate of Origin). The `dco` check
+  fails without it.
+- Use a conventional commit subject of 50 characters or fewer.
+- Fill in the pull request template.
+
+### Scope
+
+- Change only what the issue or the request asks for.
+- Do not rename or move anything that deployed resources or adopters depend on: the bundle name,
+  resource keys, Job task keys, Job and dashboard names, tables, columns, CLI flags, config
+  fields, and file paths that resources reference. Propose such a change in the pull request
+  body instead.
+- List every change that the request did not name, with its reason, or write "None".
 - When a change touches `databricks.yml` or `resources/`, list the deployed fields that change.
 
-## Review and simplification
+### Quality
 
-Apply these checks to implementation and code review before calling work ready:
-
-1. Trace the requirement through inputs, execution, stored or generated output, and consumers.
-   Map each acceptance criterion to code and a verification result.
-2. Run focused tests and `scripts/run-local-validation.sh`. For affected Python code, inspect
-   targeted correctness and maintainability lint findings. Record any check not run.
-3. Scan affected code for unused symbols and unreachable paths; scan the whole repository
-   when the review scope is repository-wide. Use available dead-code analyzers and `rg` to
-   check callers, dynamic entry points, generated assets, tests, and documentation before
-   deleting a candidate.
-4. Look for duplicate paths, pass-through layers, speculative configuration, and helpers
-   with no current consumer. Simplify only when the result stays clear and preserves explicit
-   domain validation and failure behavior. Treat broad lint, complexity, and coverage results
-   as leads to investigate, not automatic refactor orders.
-5. Classify findings as fixed, retained with reason, false positive, or blocked. Record
-   commands, results, and proof scope, including subprocess coverage gaps. Separate tool or
-   environment failures from code failures.
-
-Next: verify the repository state before editing.
+- Diagnose first, then make the smallest durable change that fully meets the requirement.
+- Use established libraries and tools. Do not add compatibility layers or unfinished stopgaps.
+- Keep names intention-revealing and domain-specific.
+- Trace each requirement from input to stored output and its consumers, and map each acceptance
+  criterion to a check.
+- Before you delete code, check callers, dynamic entry points, generated files, tests, and docs.
+- Separate tool or environment failures from code failures, and never claim stronger proof than
+  the evidence.
