@@ -7,17 +7,20 @@ bundle:
 include:
   - resources/*.yml
 
-# Upload only the files that the collector Job reads. Repository tooling stays local.
+# Keep repository tooling out of the workspace. The collector reads workflow-monitoring.yml and
+# src/. The dashboard file stays synced, because the dashboard resource reads it.
 sync:
   exclude:
+    - "*.md"
     - .act/**
     - .codex/**
     - .github/**
     - docs/**
     - examples/**
+    - pyproject.toml
     - scripts/**
     - tests/**
-    - src/dashboards/**
+    - uv.lock
     - src/visualizations/**
     - src/workflow_monitoring_cli.py
 

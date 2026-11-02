@@ -75,6 +75,28 @@ class BundleAndCliVersionContractTests(unittest.TestCase):
         self.assertEqual(minimum_version, wrapper_minimum)
 
 
+class LocalValueSafetyTests(unittest.TestCase):
+    """Keep account values out of the tracked bundle. Adopters commit their clones."""
+
+    def test_bundle_stores_no_profile_host_or_warehouse(self) -> None:
+        bundle_configuration = yaml.safe_load(BUNDLE_PATH.read_text(encoding="utf-8"))
+
+        self.assertNotIn("default", bundle_configuration["variables"]["warehouse_id"])
+        for scope in (bundle_configuration, *bundle_configuration["targets"].values()):
+            workspace = scope.get("workspace", {})
+            self.assertNotIn("profile", workspace)
+            self.assertNotIn("host", workspace)
+        for target in bundle_configuration["targets"].values():
+            self.assertNotIn("warehouse_id", target.get("variables", {}))
+
+    def test_local_databricks_state_is_git_ignored(self) -> None:
+        ignored_patterns = (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+        # The wrapper saves the real warehouse ID under .databricks/.
+        self.assertIn(".databricks/", ignored_patterns)
+        self.assertIn(".workflow-monitoring.*.yml", ignored_patterns)
+
+
 class ShellScriptContractTests(unittest.TestCase):
     """Keep the shell scripts parseable and the release help stable."""
 

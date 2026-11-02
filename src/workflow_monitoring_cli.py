@@ -30,6 +30,7 @@ DASHBOARD_KEY = "workflow_monitoring"
 BUNDLE_TARGETS = ("dev", "prod")
 DEFAULT_COMPLETION_TIME = "06:00"
 WORKFLOWS_KEY_PATTERN = re.compile(r"^workflows:[ \t]*(#.*)?$")
+EMPTY_WORKFLOWS_PATTERN = re.compile(r"^workflows:[ \t]*\[[ \t]*\]([ \t]*(?:#.*)?)$", re.MULTILINE)
 LIST_ITEM_INDENT_PATTERN = re.compile(r"^([ \t]*)- ")
 SIGN_IN_HINT = (
     "Sign in to your workspace with 'databricks auth login --host <workspace-url>', "
@@ -319,7 +320,10 @@ def select_jobs(
 
     _require_valid_completion_time(project_directory / SCHEMA_RELATIVE_PATH, completion_time)
     configuration_path = project_directory / CONFIGURATION_FILE_NAME
-    configuration_text = configuration_path.read_text(encoding="utf-8")
+    # The tracked file starts with an empty flow list. Block style lets entries keep comments.
+    configuration_text = EMPTY_WORKFLOWS_PATTERN.sub(
+        r"workflows:\1", configuration_path.read_text(encoding="utf-8"), count=1
+    )
     offset, indent = workflows_insertion_point(configuration_text)
     monitored_job_ids = configured_job_ids(configuration_text)
 
@@ -385,12 +389,14 @@ def deploy_project(
     if target == "dev":
         cost_note = (
             "This creates the collector Job, three tables, and the dashboard, then runs the "
-            "collector once on serverless compute."
+            "collector once on serverless compute. The run refreshes the dashboard, which "
+            "starts the SQL warehouse."
         )
     else:
         cost_note = (
             "This creates the prod resources and unpauses the collector schedule. The collector "
-            "then runs on serverless compute every 5 minutes."
+            "then runs on serverless compute every 5 minutes, and each run starts the SQL "
+            "warehouse to refresh the dashboard."
         )
     print(cost_note)
     if not assume_yes and not prompts.confirm(f"Deploy to {target}?"):

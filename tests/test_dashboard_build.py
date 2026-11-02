@@ -354,7 +354,5 @@ class ConfigurationContractTests(unittest.TestCase):
         configuration = yaml.safe_load(TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8"))
         self.assertEqual(configuration["version"], 3)
         self.assertEqual(configuration["default_timezone"], "UTC")
-        self.assertTrue(configuration["workflows"])
-        for workflow in configuration["workflows"]:
-            self.assertIn("job_id", workflow)
-            self.assertNotIn("job_name", workflow)
+        # A fresh clone monitors nothing until the user ticks Jobs.
+        self.assertEqual(configuration["workflows"], [])

@@ -2,4 +2,7 @@
 .venv/
 __pycache__/
 .ruff_cache/
+# Local Databricks state, including the saved SQL warehouse per target.
 .databricks/
+# A killed select-jobs run can leave its temporary config copy.
+.workflow-monitoring.*.yml

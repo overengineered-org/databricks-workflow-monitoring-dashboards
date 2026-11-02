@@ -189,6 +189,22 @@ If you forked the repository, merge the new release tag from this repository int
 `workflow-monitoring.yml` and `databricks.yml` can conflict, and only when you changed them. Read
 the release notes for each version. They list the changes that need an action.
 
+### From a template project (v0.2.0 to v0.3.1)
+
+Releases v0.2.0 to v0.3.1 created a separate project with `databricks bundle init`. Move to a clone
+once:
+
+1. Clone this repository, as in [step 3](#3-clone-this-repository).
+2. Copy your project's `workflow-monitoring.yml` into the clone. Change the first line to
+   `# yaml-language-server: $schema=./src/workflow-monitoring.schema.json`.
+3. If you changed variable defaults in your project's `databricks.yml`, set the same defaults in
+   the clone's `databricks.yml`.
+4. Run `uv run workflow-monitoring deploy` for each target that you use.
+
+The bundle name stays `workflow_monitoring`. If you kept the default project name, the deploy
+updates your existing Job, tables, and dashboard. If you chose another project name, set
+`bundle.name` in the clone's `databricks.yml` to that name.
+
 ## Choose an SLA schedule
 
 Every active workflow needs a completion time. The timezone defaults to

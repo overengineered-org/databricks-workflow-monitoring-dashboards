@@ -20,6 +20,16 @@ import workflow_monitoring_cli as cli
 from workflow_monitoring_config import load_workflow_monitoring_configuration
 
 TRACKED_CONFIGURATION = (REPOSITORY_ROOT / cli.CONFIGURATION_FILE_NAME).read_text(encoding="utf-8")
+# A configuration that already monitors Job 123456, as after a first select-jobs run.
+MONITORED_CONFIGURATION = TRACKED_CONFIGURATION.replace(
+    "workflows: []\n",
+    "workflows:\n"
+    "  - job_id: 123456\n"
+    "    monitoring_status: inactive\n"
+    "    sla:\n"
+    "      frequency: daily\n"
+    '      completion_time: "06:00"\n',
+)
 WORKSPACE_JOBS = [
     {"job_id": 30, "settings": {"name": "orders nightly"}},
     {"job_id": 10, "settings": {"name": "Billing\nexport"}},
@@ -85,6 +95,7 @@ class FakeDatabricksTestCase(unittest.TestCase):
             (self.project / relative_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPOSITORY_ROOT / relative_path, self.project / relative_path)
         self.configuration_path = self.project / cli.CONFIGURATION_FILE_NAME
+        self.configuration_path.write_text(MONITORED_CONFIGURATION, encoding="utf-8")
 
         environment = {
             "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
@@ -152,13 +163,36 @@ class SelectJobsTests(FakeDatabricksTestCase):
         )
         self.assertEqual(
             self.configuration_path.read_text(encoding="utf-8"),
-            TRACKED_CONFIGURATION + expected_entries,
+            MONITORED_CONFIGURATION + expected_entries,
         )
         configuration = load_workflow_monitoring_configuration(
             self.configuration_path, self.project / cli.SCHEMA_RELATIVE_PATH
         )
         self.assertEqual([workflow.job_id for workflow in configuration.active_workflows], [10, 30])
         self.assertEqual(list(self.project.glob(".workflow-monitoring.*")), [])
+
+    def test_fresh_clone_with_an_empty_list_becomes_block_style(self) -> None:
+        self.configuration_path.write_text(TRACKED_CONFIGURATION, encoding="utf-8")
+
+        exit_code, _output = self.select([30])
+
+        self.assertEqual(exit_code, 0)
+        self.choose_jobs.assert_called_once()
+        self.assertEqual(self.choose_jobs.call_args.args[1], set())
+        self.assertEqual(
+            self.configuration_path.read_text(encoding="utf-8"),
+            TRACKED_CONFIGURATION.replace(
+                "workflows: []\n",
+                "workflows:\n"
+                + cli.workflow_entries_yaml(
+                    [cli.WorkspaceJob(30, "orders nightly")], "06:00", "  "
+                ),
+            ),
+        )
+        configuration = load_workflow_monitoring_configuration(
+            self.configuration_path, self.project / cli.SCHEMA_RELATIVE_PATH
+        )
+        self.assertEqual([workflow.job_id for workflow in configuration.active_workflows], [30])
 
     def test_one_job_message_is_singular(self) -> None:
         _exit_code, output = self.select([30])
@@ -201,18 +235,24 @@ class SelectJobsTests(FakeDatabricksTestCase):
                 self.assertEqual(exit_code, 0)
                 self.assertIn(message, output)
                 self.assertEqual(
-                    self.configuration_path.read_text(encoding="utf-8"), TRACKED_CONFIGURATION
+                    self.configuration_path.read_text(encoding="utf-8"), MONITORED_CONFIGURATION
                 )
                 self.assertEqual(list(self.project.glob(".workflow-monitoring.*")), [])
 
     def test_errors_leave_the_file_unchanged(self) -> None:
-        invalid_timezone = TRACKED_CONFIGURATION.replace('"UTC"', '"Mars/Base"')
+        invalid_timezone = MONITORED_CONFIGURATION.replace('"UTC"', '"Mars/Base"')
         cases = (
-            ("bad time", TRACKED_CONFIGURATION, {"completion_time": "6am"}, {}, "HH:MM"),
-            ("cli fails", TRACKED_CONFIGURATION, {}, {"FAKE_DATABRICKS_FAIL": "jobs"}, "failed"),
-            ("bad json", TRACKED_CONFIGURATION, {}, {"FAKE_DATABRICKS_JOBS": "x"}, "invalid JSON"),
-            ("cli missing", TRACKED_CONFIGURATION, {}, {"PATH": "/nonexistent"}, "not found"),
-            ("flow list", "version: 3\nworkflows: []\n", {}, {}, "block-style"),
+            ("bad time", MONITORED_CONFIGURATION, {"completion_time": "6am"}, {}, "HH:MM"),
+            ("cli fails", MONITORED_CONFIGURATION, {}, {"FAKE_DATABRICKS_FAIL": "jobs"}, "failed"),
+            (
+                "bad json",
+                MONITORED_CONFIGURATION,
+                {},
+                {"FAKE_DATABRICKS_JOBS": "x"},
+                "invalid JSON",
+            ),
+            ("cli missing", MONITORED_CONFIGURATION, {}, {"PATH": "/nonexistent"}, "not found"),
+            ("flow list", "version: 3\nworkflows: [{job_id: 1}]\n", {}, {}, "block-style"),
             ("invalid result", invalid_timezone, {}, {}, "Nothing changed"),
         )
         for label, configuration_text, options, environment, message in cases:
@@ -228,7 +268,7 @@ class SelectJobsTests(FakeDatabricksTestCase):
     def test_structure_and_time_errors_fail_before_the_jobs_list_call(self) -> None:
         with self.assertRaises(cli.CommandError):
             self.select([30], completion_time="25:00")
-        self.configuration_path.write_text("workflows: []\n", encoding="utf-8")
+        self.configuration_path.write_text("workflows: [{job_id: 1}]\n", encoding="utf-8")
         with self.assertRaises(cli.CommandError):
             self.select([30])
 
