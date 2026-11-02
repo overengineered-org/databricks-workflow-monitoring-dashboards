@@ -42,5 +42,5 @@
     }
   },
   "welcome_message": "Create a Databricks workflow monitoring project.",
-  "success_message": "Created project {{.project_name}}. Next: edit workflow-monitoring.yml, then run databricks bundle validate."
+  "success_message": "Created project {{.project_name}}. Next: run workflow-monitoring select-jobs or edit workflow-monitoring.yml, then run databricks bundle validate."
 }

@@ -38,19 +38,36 @@ tag and creates a small project that contains only the deployment files.
 
 You need:
 
-| Tool | Minimum |
-| --- | --- |
-| Databricks CLI | 1.22.1 |
+| Tool | Minimum | Use |
+| --- | --- | --- |
+| Databricks CLI | 1.22.1 | Required |
+| [uv](https://docs.astral.sh/uv/) | Any current release | Optional: installs the `workflow-monitoring` CLI |
+
+**With the `workflow-monitoring` CLI (recommended).** Install the CLI once. It creates the project,
+lists the Jobs in your workspace, and adds the Jobs that you tick to `workflow-monitoring.yml`:
+
+```sh
+uv tool install git+https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard@v0.3.0
+databricks auth profiles
+workflow-monitoring init --profile <profile>
+cd workflow_monitoring
+```
+
+`init` runs `databricks bundle init` for the release tag of the CLI, then offers the Job picker
+from [step 3](#3-create-the-configuration). The picker only reads the Jobs list. It starts no
+compute.
+
+**With the Databricks CLI only.**
 
 ```sh
 databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
-  --tag v0.2.0 \
+  --tag v0.3.0 \
   --template-dir template \
   --output-dir .
 cd workflow_monitoring
 ```
 
-v0.2.0 is the first release with the template.
+v0.2.0 is the first release with the template. v0.3.0 adds the `workflow-monitoring` CLI.
 
 The command creates a project folder named by the `project_name` prompt. The default is
 `workflow_monitoring`. Change the `cd` command if you choose another name. The other prompts set
@@ -111,7 +128,29 @@ You can also pass `--var="warehouse_id=<warehouse-id>"` to each bundle command.
 
 ### 3. Create the configuration
 
-Edit `workflow-monitoring.yml` and add your first Job:
+Tick the Jobs to monitor with the CLI. Run it from the project folder:
+
+```sh
+workflow-monitoring select-jobs --profile <profile>
+```
+
+The picker shows each Job name and ID and marks the Jobs that are already in the file. Press
+space to tick a Job and enter to confirm. The CLI adds each ticked Job as an active daily SLA at
+`06:00` and keeps your comments. Before it writes, it checks the file with the collector rules in
+your project's `workflow_monitoring/` folder.
+
+`init` accepts the same `--name-contains` and `--completion-time` options.
+
+| Option | Use |
+| --- | --- |
+| `--name-contains <text>` | Show only Jobs whose name has this text. |
+| `--completion-time <HH:MM>` | Set the daily SLA time for the new Jobs. |
+| `--dry-run` | Print the new entries and write nothing. |
+
+To use a weekly, fortnightly, or monthly SLA, edit the entry after the CLI adds it. See
+[Choose an SLA schedule](#choose-an-sla-schedule).
+
+Without the CLI, edit `workflow-monitoring.yml` and add your first Job:
 
 ```yaml
 version: 3
@@ -184,7 +223,8 @@ serverless compute.
 
 ## Manage monitored Jobs
 
-Edit `workflow-monitoring.yml`. Keep Job IDs unique and valid for the selected SLA schedule.
+Run `workflow-monitoring select-jobs --profile <profile>` to add Jobs, or edit
+`workflow-monitoring.yml`. Keep Job IDs unique and valid for the selected SLA schedule.
 Set `monitoring_status` to `inactive` to exclude a Job without deleting its configuration.
 
 Run `databricks bundle deploy` to publish the change. In the prod target, the next scheduled

@@ -99,6 +99,8 @@ class ReleaseVersionReferenceTests(unittest.TestCase):
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
         readme_tags = re.findall(r"--tag (v\d+\.\d+\.\d+)", readme)
         self.assertEqual(readme_tags, [expected_tag])
+        cli_install_tags = re.findall(r"uv tool install [^\s@]+@(v\d+\.\d+\.\d+)", readme)
+        self.assertEqual(cli_install_tags, [expected_tag])
 
         configuration_template = TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8")
         schema_tags = re.findall(
