@@ -42,41 +42,6 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.13.5"
-      - name: Verify committed Python lockfile
-        run: uv lock --check
-      - name: Install committed Python environment
-        run: uv sync --locked
-      - name: Check Python formatting
-        run: uv run ruff format --check .
-      - name: Run Python lint checks
-        run: uv run ruff check .
-      - name: Run tests
-        run: uv run python -m unittest discover -s tests -v
-      - name: Snapshot built dashboard
-        run: cp src/dashboards/workflow-monitoring.lvdash.json /tmp/workflow-monitoring.lvdash.json
-      - name: Build dashboard
-        # The build must be current, so the tracked scaffold and Vega files match the dashboard.
-        run: |
-          uv run python scripts/build_dashboard.py
-      - name: Check built dashboard
-        run: cmp /tmp/workflow-monitoring.lvdash.json src/dashboards/workflow-monitoring.lvdash.json
-      - name: Validate dashboard JSON
-        run: jq empty src/dashboards/workflow-monitoring.lvdash.json
-      - name: Check banned em dash
-        # Build the character from bytes so this file does not contain it itself.
-        # grep exits 1 for no match and 2 for an error. Only exit 1 may pass.
-        run: |
-          banned_character="$(printf '\342\200\224')"
-          command -v grep >/dev/null || { echo "grep is required for the em dash check" >&2; exit 1; }
-          set +e
-          grep -rIl --exclude-dir=.git "$banned_character" .
-          status=$?
-          set -e
-          if [[ "$status" -gt 1 ]]; then
-            echo "grep exited with code $status" >&2
-            exit 1
-          fi
-          if [[ "$status" -eq 0 ]]; then
-            echo "banned em dash found in the files above" >&2
-            exit 1
-          fi
+      - name: Run fast checks
+        # scripts/check.sh is the one source of these checks, for agents, humans, and CI.
+        run: scripts/check.sh

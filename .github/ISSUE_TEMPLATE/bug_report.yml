@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in the collector, dashboard, wrapper, or bundle does not work.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Use fake values. Do not paste workspace URLs, tokens, warehouse IDs, or real Job names.
+        For a security problem, use the Security tab instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release tag or commit, for example v0.4.0.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands that you ran and the relevant part of workflow-monitoring.yml.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: The error output or a screenshot.
+    validations:
+      required: true
+  - type: input
+    id: databricks-cli
+    attributes:
+      label: Databricks CLI version
+      description: The output of `databricks version`.

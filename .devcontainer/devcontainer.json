@@ -1,0 +1,8 @@
+{
+  "name": "databricks-jobs-monitoring-dashboard",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.13-bookworm",
+  "remoteEnv": {
+    "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
+}

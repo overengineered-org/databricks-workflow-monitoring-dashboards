@@ -75,6 +75,23 @@ class BundleAndCliVersionContractTests(unittest.TestCase):
         self.assertEqual(minimum_version, wrapper_minimum)
 
 
+class DevContainerContractTests(unittest.TestCase):
+    """Keep the dev container on the same tool versions as the Act image."""
+
+    def test_dev_container_pins_match_act_image(self) -> None:
+        post_create = (REPOSITORY_ROOT / ".devcontainer/post-create.sh").read_text(encoding="utf-8")
+        act_dockerfile = ACT_DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            re.search(r'uv_version="([^"]+)"', post_create).group(1),
+            re.search(r"astral-sh/uv:([0-9.]+)", act_dockerfile).group(1),
+        )
+        self.assertEqual(
+            re.search(r'databricks_cli_version="([^"]+)"', post_create).group(1),
+            re.search(r"setup-cli/v([0-9.]+)/install\.sh", act_dockerfile).group(1),
+        )
+
+
 class LocalValueSafetyTests(unittest.TestCase):
     """Keep account values out of the tracked bundle. Adopters commit their clones."""
 
