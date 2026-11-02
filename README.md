@@ -136,7 +136,10 @@ workflow-monitoring select-jobs --profile <profile>
 
 The picker shows each Job name and ID and marks the Jobs that are already in the file. Press
 space to tick a Job and enter to confirm. The CLI adds each ticked Job as an active daily SLA at
-`06:00`, keeps your comments, and checks the file with the collector rules before it writes.
+`06:00` and keeps your comments. Before it writes, it checks the file with the collector rules in
+your project's `workflow_monitoring/` folder.
+
+`init` accepts the same `--name-contains` and `--completion-time` options.
 
 | Option | Use |
 | --- | --- |

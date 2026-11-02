@@ -3,27 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
 import yaml
 
-from workflow_monitoring_config import load_workflow_monitoring_configuration
-
 REPOSITORY_URL = "https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard"
 DISTRIBUTION_NAME = "databricks-jobs-monitoring-dashboard"
 CONFIGURATION_FILE_NAME = "workflow-monitoring.yml"
+# The project's own product files define the rules, so the CLI checks the file exactly
+# like the collector version that the project deploys.
 SCHEMA_RELATIVE_PATH = Path("workflow_monitoring/workflow-monitoring.schema.json")
-COMPLETION_TIME_PATTERN = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+LOADER_RELATIVE_PATH = Path("workflow_monitoring/collector/workflow_monitoring_config.py")
+DEFAULT_COMPLETION_TIME = "06:00"
 WORKFLOWS_KEY_PATTERN = re.compile(r"^workflows:[ \t]*(#.*)?$")
+LIST_ITEM_INDENT_PATTERN = re.compile(r"^([ \t]*)- ")
 
 
 class CommandError(Exception):
@@ -42,14 +46,21 @@ JobChooser = Callable[[Sequence[WorkspaceJob], set[int]], list[int]]
 Confirmer = Callable[[str], bool]
 
 
+def _run_databricks(arguments: list[str], *, capture: bool) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["databricks", *arguments], capture_output=capture, text=True, check=False
+        )
+    except FileNotFoundError as error:
+        raise CommandError("Databricks CLI not found. Install it, then try again.") from error
+
+
 def list_workspace_jobs(profile: str) -> list[WorkspaceJob]:
     """Read every Job in the workspace with the read-only Jobs list API."""
 
-    command = ["databricks", "jobs", "list", "--output", "json", "--profile", profile]
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
-    except FileNotFoundError as error:
-        raise CommandError("Databricks CLI not found. Install it, then try again.") from error
+    completed = _run_databricks(
+        ["jobs", "list", "--output", "json", "--profile", profile], capture=True
+    )
     if completed.returncode != 0:
         raise CommandError(f"databricks jobs list failed: {completed.stderr.strip()}")
     try:
@@ -72,10 +83,43 @@ def configured_job_ids(configuration_text: str) -> set[int]:
     document = yaml.safe_load(configuration_text) or {}
     workflows = document.get("workflows") if isinstance(document, dict) else None
     return {
-        int(workflow["job_id"])
+        workflow["job_id"]
         for workflow in workflows or []
         if isinstance(workflow, dict) and isinstance(workflow.get("job_id"), int)
     }
+
+
+def workflows_insertion_point(configuration_text: str) -> tuple[int, str]:
+    """Return the text offset after the last workflows item and the list item indent."""
+
+    lines = configuration_text.splitlines(keepends=True)
+    workflows_line_index = next(
+        (index for index, line in enumerate(lines) if WORKFLOWS_KEY_PATTERN.match(line)),
+        None,
+    )
+    if workflows_line_index is None:
+        raise CommandError(
+            f"{CONFIGURATION_FILE_NAME} has no block-style top-level 'workflows:' key. "
+            "Add the Jobs by hand."
+        )
+
+    block_end_index = len(lines)
+    indent = "  "
+    for index in range(workflows_line_index + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and not line[0].isspace() and not line.startswith("#"):
+            block_end_index = index
+            break
+        list_item = LIST_ITEM_INDENT_PATTERN.match(line)
+        if list_item:
+            indent = list_item.group(1)
+
+    # Blank lines and top-level comments before the next key stay after the new entries.
+    while block_end_index > workflows_line_index + 1 and (
+        not lines[block_end_index - 1].strip() or lines[block_end_index - 1].startswith("#")
+    ):
+        block_end_index -= 1
+    return sum(len(line) for line in lines[:block_end_index]), indent
 
 
 def workflow_entries_yaml(jobs: Sequence[WorkspaceJob], completion_time: str, indent: str) -> str:
@@ -96,66 +140,55 @@ def workflow_entries_yaml(jobs: Sequence[WorkspaceJob], completion_time: str, in
     return "".join(f"{line}\n" for line in entry_lines)
 
 
-def add_workflow_entries(
-    configuration_text: str, jobs: Sequence[WorkspaceJob], completion_time: str
-) -> str:
-    """Insert entries at the end of the block-style workflows list, keeping all other text."""
+def insert_entries(configuration_text: str, offset: int, entries_yaml: str) -> str:
+    """Insert rendered entries at the offset from workflows_insertion_point."""
 
-    lines = configuration_text.splitlines(keepends=True)
-    workflows_line_index = next(
-        (index for index, line in enumerate(lines) if WORKFLOWS_KEY_PATTERN.match(line)),
-        None,
+    head = configuration_text[:offset]
+    if not head.endswith("\n"):
+        head += "\n"
+    return head + entries_yaml + configuration_text[offset:]
+
+
+@contextmanager
+def validated_temporary_configuration(
+    project_directory: Path, configuration_text: str
+) -> Iterator[Path]:
+    """Yield a temporary copy of the text that passed the project's collector rules."""
+
+    loader_spec = importlib.util.spec_from_file_location(
+        "project_workflow_monitoring_config", project_directory / LOADER_RELATIVE_PATH
     )
-    if workflows_line_index is None:
-        raise CommandError(
-            f"{CONFIGURATION_FILE_NAME} has no block-style top-level 'workflows:' key. "
-            "Add the Jobs by hand."
-        )
-
-    block_end_index = len(lines)
-    indent = "  "
-    for index in range(workflows_line_index + 1, len(lines)):
-        line = lines[index]
-        if line.strip() and not line[0].isspace() and not line.startswith("#"):
-            block_end_index = index
-            break
-        list_item = re.match(r"^([ \t]*)- ", line)
-        if list_item:
-            indent = list_item.group(1)
-
-    # Blank lines and top-level comments before the next key stay after the new entries.
-    while block_end_index > workflows_line_index + 1 and (
-        not lines[block_end_index - 1].strip() or lines[block_end_index - 1].startswith("#")
-    ):
-        block_end_index -= 1
-    if block_end_index and not lines[block_end_index - 1].endswith("\n"):
-        lines[block_end_index - 1] += "\n"
-
-    new_entries = workflow_entries_yaml(jobs, completion_time, indent)
-    return "".join(lines[:block_end_index]) + new_entries + "".join(lines[block_end_index:])
-
-
-def write_validated_configuration(
-    configuration_path: Path, schema_path: Path, configuration_text: str
-) -> None:
-    """Validate the new text with the collector rules, then replace the file in one step."""
+    loader_module = importlib.util.module_from_spec(loader_spec)
+    # Dataclasses look up their module in sys.modules while the module runs.
+    sys.modules[loader_spec.name] = loader_module
+    loader_spec.loader.exec_module(loader_module)
 
     file_descriptor, temporary_name = tempfile.mkstemp(
-        dir=configuration_path.parent, prefix=".workflow-monitoring.", suffix=".yml"
+        dir=project_directory, prefix=".workflow-monitoring.", suffix=".yml"
     )
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(file_descriptor, "w", encoding="utf-8") as temporary_file:
             temporary_file.write(configuration_text)
         try:
-            load_workflow_monitoring_configuration(temporary_path, schema_path)
+            loader_module.load_workflow_monitoring_configuration(
+                temporary_path, project_directory / SCHEMA_RELATIVE_PATH
+            )
         except ValueError as error:
             raise CommandError(
                 f"the updated configuration is invalid. Nothing changed.\n{error}"
             ) from error
-        os.replace(temporary_path, configuration_path)
+        yield temporary_path
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def _require_valid_completion_time(schema_path: Path, completion_time: str) -> None:
+    # Check early with the schema pattern, so a typo fails before the user ticks Jobs.
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    pattern = schema["$defs"]["sla"]["properties"]["completion_time"]["pattern"]
+    if not re.match(pattern, completion_time):
+        raise CommandError("--completion-time must use HH:MM, for example 06:00.")
 
 
 def select_jobs(
@@ -172,16 +205,19 @@ def select_jobs(
 
     configuration_path = project_directory / CONFIGURATION_FILE_NAME
     schema_path = project_directory / SCHEMA_RELATIVE_PATH
-    if not configuration_path.is_file() or not schema_path.is_file():
+    if not all(
+        path.is_file()
+        for path in (configuration_path, schema_path, project_directory / LOADER_RELATIVE_PATH)
+    ):
         raise CommandError(
-            f"{project_directory} is not a workflow monitoring project. "
-            f"It needs {CONFIGURATION_FILE_NAME} and {SCHEMA_RELATIVE_PATH}."
+            f"{project_directory} is not a workflow monitoring project. It needs "
+            f"{CONFIGURATION_FILE_NAME}, {SCHEMA_RELATIVE_PATH}, and {LOADER_RELATIVE_PATH}."
         )
-    if not COMPLETION_TIME_PATTERN.match(completion_time):
-        raise CommandError("--completion-time must use HH:MM, for example 06:00.")
-
+    _require_valid_completion_time(schema_path, completion_time)
     configuration_text = configuration_path.read_text(encoding="utf-8")
+    offset, indent = workflows_insertion_point(configuration_text)
     monitored_job_ids = configured_job_ids(configuration_text)
+
     jobs = list_workspace_jobs(profile)
     if name_contains:
         jobs = [job for job in jobs if name_contains.casefold() in job.name.casefold()]
@@ -195,17 +231,18 @@ def select_jobs(
         print("No new Jobs selected. Nothing changed.")
         return 0
 
-    updated_text = add_workflow_entries(configuration_text, selected_jobs, completion_time)
-    print(f"New entries for {configuration_path}:\n")
-    print(workflow_entries_yaml(selected_jobs, completion_time, "  "))
-    if dry_run:
-        print("Dry run. Nothing changed.")
-        return 0
-    if not confirm(f"Add {len(selected_jobs)} Jobs to {CONFIGURATION_FILE_NAME}?"):
-        print("Cancelled. Nothing changed.")
-        return 0
+    entries_yaml = workflow_entries_yaml(selected_jobs, completion_time, indent)
+    updated_text = insert_entries(configuration_text, offset, entries_yaml)
+    with validated_temporary_configuration(project_directory, updated_text) as temporary_path:
+        print(f"New entries for {configuration_path}:\n\n{entries_yaml}")
+        if dry_run:
+            print("Dry run. Nothing changed.")
+            return 0
+        if not confirm(f"Add {len(selected_jobs)} Jobs to {CONFIGURATION_FILE_NAME}?"):
+            print("Cancelled. Nothing changed.")
+            return 0
+        os.replace(temporary_path, configuration_path)
 
-    write_validated_configuration(configuration_path, schema_path, updated_text)
     print(
         f"Added {len(selected_jobs)} Jobs with a daily {completion_time} SLA. "
         f"Edit {CONFIGURATION_FILE_NAME} to change a schedule, then run databricks bundle deploy."
@@ -224,24 +261,23 @@ def init_project(
 
     output_directory.mkdir(parents=True, exist_ok=True)
     existing_projects = _project_directories(output_directory)
-    command = [
-        "databricks",
-        "bundle",
-        "init",
-        REPOSITORY_URL,
-        "--tag",
-        f"v{version(DISTRIBUTION_NAME)}",
-        "--template-dir",
-        "template",
-        "--output-dir",
-        str(output_directory),
-        "--profile",
-        profile,
-    ]
-    try:
-        completed = subprocess.run(command, check=False)
-    except FileNotFoundError as error:
-        raise CommandError("Databricks CLI not found. Install it, then try again.") from error
+    # The tag is the CLI's own version, so a local development install needs a published tag.
+    completed = _run_databricks(
+        [
+            "bundle",
+            "init",
+            REPOSITORY_URL,
+            "--tag",
+            f"v{version(DISTRIBUTION_NAME)}",
+            "--template-dir",
+            "template",
+            "--output-dir",
+            str(output_directory),
+            "--profile",
+            profile,
+        ],
+        capture=False,
+    )
     if completed.returncode != 0:
         return completed.returncode
 
@@ -287,20 +323,25 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=version(DISTRIBUTION_NAME))
     subcommands = parser.add_subparsers(dest="command", required=True)
 
+    picker_options = argparse.ArgumentParser(add_help=False)
     # Never pick a Databricks profile for the user.
-    profile_help = "Databricks CLI profile to use"
+    picker_options.add_argument("--profile", required=True, help="Databricks CLI profile to use")
+    picker_options.add_argument("--name-contains", help="show only Jobs whose name has this text")
+    picker_options.add_argument(
+        "--completion-time",
+        default=DEFAULT_COMPLETION_TIME,
+        help="daily SLA time for new Jobs, HH:MM",
+    )
 
-    init_parser = subcommands.add_parser("init", help="create a new monitoring project")
-    init_parser.add_argument("--profile", required=True, help=profile_help)
+    init_parser = subcommands.add_parser(
+        "init", parents=[picker_options], help="create a new monitoring project"
+    )
     init_parser.add_argument("--output-dir", type=Path, default=Path("."))
 
-    select_parser = subcommands.add_parser("select-jobs", help="tick Jobs to monitor")
-    select_parser.add_argument("--profile", required=True, help=profile_help)
-    select_parser.add_argument("--project-dir", type=Path, default=Path("."))
-    select_parser.add_argument("--name-contains", help="show only Jobs whose name has this text")
-    select_parser.add_argument(
-        "--completion-time", default="06:00", help="daily SLA time for new Jobs, HH:MM"
+    select_parser = subcommands.add_parser(
+        "select-jobs", parents=[picker_options], help="tick Jobs to monitor"
     )
+    select_parser.add_argument("--project-dir", type=Path, default=Path("."))
     select_parser.add_argument(
         "--dry-run", action="store_true", help="print the new entries, write nothing"
     )
@@ -314,8 +355,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return select_jobs(
             project_directory,
             arguments.profile,
-            name_contains=getattr(arguments, "name_contains", None),
-            completion_time=getattr(arguments, "completion_time", "06:00"),
+            name_contains=arguments.name_contains,
+            completion_time=arguments.completion_time,
             dry_run=dry_run,
             choose_jobs=_ask_jobs,
             confirm=_ask_confirm,

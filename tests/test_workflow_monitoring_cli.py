@@ -14,28 +14,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests._paths import REPOSITORY_ROOT
+import tests._paths  # noqa: F401  # Puts the repository root and src/ on sys.path.
 
 # isort: split
 import workflow_monitoring_cli as cli
+from scripts.build_template import PRODUCT_DIRECTORY, TEMPLATE_PROJECT
 from workflow_monitoring_config import load_workflow_monitoring_configuration
 
-SCHEMA_PATH = REPOSITORY_ROOT / "src/workflow-monitoring.schema.json"
-TEMPLATE_CONFIGURATION = textwrap.dedent(
-    """\
-    # Keep this comment.
-    version: 3
-
-    default_timezone: "UTC"
-
-    workflows:
-      # Job names come from the Jobs API.
-      - job_id: 123456
-        monitoring_status: inactive
-        sla:
-          frequency: daily
-          completion_time: "06:00"
-    """
+# The rendered configuration as bundle init writes it with the default timezone.
+TEMPLATE_CONFIGURATION = (
+    (TEMPLATE_PROJECT / "workflow-monitoring.yml.tmpl")
+    .read_text(encoding="utf-8")
+    .replace("{{.default_timezone}}", "UTC")
 )
 WORKSPACE_JOBS = [
     {"job_id": 30, "settings": {"name": "orders nightly"}},
@@ -53,19 +43,18 @@ with open(os.environ["FAKE_DATABRICKS_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(arguments) + "\\n")
 exit_code = int(os.environ.get("FAKE_DATABRICKS_EXIT", "0"))
 if exit_code:
-    print("fake failure", file=sys.stderr)
     sys.exit(exit_code)
 if arguments[:2] == ["jobs", "list"]:
     print(os.environ["FAKE_DATABRICKS_JOBS"])
 elif arguments[:2] == ["bundle", "init"]:
     project = Path(arguments[arguments.index("--output-dir") + 1]) / "new_project"
-    (project / "workflow_monitoring").mkdir(parents=True)
+    project.mkdir(parents=True)
     (project / "workflow-monitoring.yml").write_text("workflows:\\n", encoding="utf-8")
 """
 
 
 class FakeDatabricksTestCase(unittest.TestCase):
-    """Run each test with a fake databricks command and a rendered project folder."""
+    """Run each test with a fake databricks command and a project built from the template."""
 
     def setUp(self) -> None:
         temporary_directory = tempfile.TemporaryDirectory()
@@ -88,8 +77,7 @@ class FakeDatabricksTestCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
         self.project = self.root / "project"
-        (self.project / "workflow_monitoring").mkdir(parents=True)
-        shutil.copyfile(SCHEMA_PATH, self.project / cli.SCHEMA_RELATIVE_PATH)
+        shutil.copytree(PRODUCT_DIRECTORY, self.project / "workflow_monitoring")
         self.configuration_path = self.project / cli.CONFIGURATION_FILE_NAME
         self.configuration_path.write_text(TEMPLATE_CONFIGURATION, encoding="utf-8")
 
@@ -98,32 +86,33 @@ class FakeDatabricksTestCase(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
-    def select(self, chosen_job_ids, *, confirmed=True, **options) -> tuple[int, str]:
-        settings = {"name_contains": None, "completion_time": "06:00", "dry_run": False}
-        settings.update(options)
-        self.offered_jobs: list[cli.WorkspaceJob] = []
-        self.offered_monitored: set[int] = set()
-
-        def choose_jobs(jobs, monitored_job_ids):
-            self.offered_jobs = list(jobs)
-            self.offered_monitored = set(monitored_job_ids)
-            return chosen_job_ids
-
+    def select(
+        self,
+        chosen_job_ids: list[int],
+        *,
+        confirmed: bool = True,
+        name_contains: str | None = None,
+        completion_time: str = cli.DEFAULT_COMPLETION_TIME,
+        dry_run: bool = False,
+    ) -> tuple[int, str, mock.Mock]:
+        choose_jobs = mock.Mock(return_value=chosen_job_ids)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             exit_code = cli.select_jobs(
                 self.project,
                 "test-profile",
+                name_contains=name_contains,
+                completion_time=completion_time,
+                dry_run=dry_run,
                 choose_jobs=choose_jobs,
                 confirm=lambda _message: confirmed,
-                **settings,
             )
-        return exit_code, output.getvalue()
+        return exit_code, output.getvalue(), choose_jobs
 
 
 class SelectJobsTests(FakeDatabricksTestCase):
     def test_ticked_jobs_are_appended_and_pass_the_collector_rules(self) -> None:
-        exit_code, output = self.select([30, 10], completion_time="07:45")
+        exit_code, output, _choose_jobs = self.select([30, 10], completion_time="07:45")
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Added 2 Jobs", output)
@@ -131,151 +120,141 @@ class SelectJobsTests(FakeDatabricksTestCase):
             self.logged_commands(),
             [["jobs", "list", "--output", "json", "--profile", "test-profile"]],
         )
-        updated_text = self.configuration_path.read_text(encoding="utf-8")
-        self.assertTrue(updated_text.startswith(TEMPLATE_CONFIGURATION))
-        self.assertTrue(
-            updated_text.endswith(
-                textwrap.indent(
-                    textwrap.dedent(
-                        """\
-                        # Billing export
-                        - job_id: 10
-                          monitoring_status: active
-                          sla:
-                            frequency: daily
-                            completion_time: "07:45"
-                        # orders nightly
-                        - job_id: 30
-                          monitoring_status: active
-                          sla:
-                            frequency: daily
-                            completion_time: "07:45"
-                        """
-                    ),
-                    "  ",
-                )
-            )
+        expected_entries = (
+            "  # Billing export\n"
+            "  - job_id: 10\n"
+            "    monitoring_status: active\n"
+            "    sla:\n"
+            "      frequency: daily\n"
+            '      completion_time: "07:45"\n'
+            "  # orders nightly\n"
+            "  - job_id: 30\n"
+            "    monitoring_status: active\n"
+            "    sla:\n"
+            "      frequency: daily\n"
+            '      completion_time: "07:45"\n'
         )
-        configuration = load_workflow_monitoring_configuration(self.configuration_path, SCHEMA_PATH)
+        self.assertEqual(
+            self.configuration_path.read_text(encoding="utf-8"),
+            TEMPLATE_CONFIGURATION + expected_entries,
+        )
+        configuration = load_workflow_monitoring_configuration(
+            self.configuration_path, self.project / cli.SCHEMA_RELATIVE_PATH
+        )
         self.assertEqual([workflow.job_id for workflow in configuration.active_workflows], [10, 30])
         self.assertEqual(list(self.project.glob(".workflow-monitoring.*")), [])
 
     def test_picker_gets_sorted_jobs_and_marks_monitored_ids(self) -> None:
-        self.select([])
+        _exit_code, _output, choose_jobs = self.select([])
 
-        self.assertEqual(
-            self.offered_jobs,
+        choose_jobs.assert_called_once_with(
             [
                 cli.WorkspaceJob(20, "(unnamed)"),
                 cli.WorkspaceJob(10, "Billing\nexport"),
                 cli.WorkspaceJob(30, "orders nightly"),
                 cli.WorkspaceJob(123456, "placeholder twin"),
             ],
+            {123456},
         )
-        self.assertEqual(self.offered_monitored, {123456})
 
     def test_name_filter_ignores_case(self) -> None:
-        self.select([], name_contains="ORDERS")
+        _exit_code, _output, choose_jobs = self.select([], name_contains="ORDERS")
 
-        self.assertEqual(self.offered_jobs, [cli.WorkspaceJob(30, "orders nightly")])
+        self.assertEqual(choose_jobs.call_args.args[0], [cli.WorkspaceJob(30, "orders nightly")])
 
     def test_nothing_changes_without_a_new_confirmed_selection(self) -> None:
         cases = (
             ("no ticks", [], {}, "No new Jobs selected"),
             ("only monitored", [123456], {}, "No new Jobs selected"),
             ("cancelled", [30], {"confirmed": False}, "Cancelled"),
-            ("dry run", [30], {"dry_run": True}, "Dry run"),
+            ("dry run", [30], {"dry_run": True}, "  - job_id: 30\n"),
             ("no match", [30], {"name_contains": "absent"}, "No Jobs found"),
         )
         for label, chosen, options, message in cases:
             with self.subTest(label):
-                exit_code, output = self.select(chosen, **options)
+                exit_code, output, _choose_jobs = self.select(chosen, **options)
                 self.assertEqual(exit_code, 0)
                 self.assertIn(message, output)
                 self.assertEqual(
                     self.configuration_path.read_text(encoding="utf-8"), TEMPLATE_CONFIGURATION
                 )
-
-    def test_dry_run_prints_the_entries(self) -> None:
-        _exit_code, output = self.select([30], dry_run=True)
-
-        self.assertIn("  - job_id: 30\n", output)
+                self.assertEqual(list(self.project.glob(".workflow-monitoring.*")), [])
 
     def test_errors_leave_the_file_unchanged(self) -> None:
+        invalid_timezone = TEMPLATE_CONFIGURATION.replace('"UTC"', '"Mars/Base"')
         cases = (
-            ("bad time", {"completion_time": "6am"}, {}, None, "HH:MM"),
-            ("cli fails", {}, {"FAKE_DATABRICKS_EXIT": "3"}, None, "fake failure"),
-            ("bad json", {}, {"FAKE_DATABRICKS_JOBS": "not json"}, None, "invalid JSON"),
-            ("cli missing", {}, {"PATH": str(self.root / "empty")}, None, "not found"),
-            ("flow list", {}, {}, "version: 3\nworkflows: []\n", "block-style"),
-            (
-                "invalid result",
-                {},
-                {},
-                TEMPLATE_CONFIGURATION.replace('"UTC"', '"Mars/Base"'),
-                "Nothing changed",
-            ),
+            ("bad time", TEMPLATE_CONFIGURATION, {"completion_time": "6am"}, {}, "HH:MM"),
+            ("cli fails", TEMPLATE_CONFIGURATION, {}, {"FAKE_DATABRICKS_EXIT": "3"}, "failed"),
+            ("bad json", TEMPLATE_CONFIGURATION, {}, {"FAKE_DATABRICKS_JOBS": "x"}, "invalid JSON"),
+            ("cli missing", TEMPLATE_CONFIGURATION, {}, {"PATH": "/nonexistent"}, "not found"),
+            ("flow list", "version: 3\nworkflows: []\n", {}, {}, "block-style"),
+            ("invalid result", invalid_timezone, {}, {}, "Nothing changed"),
         )
-        for label, options, environment, configuration_text, message in cases:
+        for label, configuration_text, options, environment, message in cases:
             with self.subTest(label):
-                original_text = configuration_text or TEMPLATE_CONFIGURATION
-                self.configuration_path.write_text(original_text, encoding="utf-8")
+                self.configuration_path.write_text(configuration_text, encoding="utf-8")
                 with mock.patch.dict(os.environ, environment):
                     with self.assertRaisesRegex(cli.CommandError, message):
                         self.select([30], **options)
-                self.assertEqual(self.configuration_path.read_text(encoding="utf-8"), original_text)
+                self.assertEqual(
+                    self.configuration_path.read_text(encoding="utf-8"), configuration_text
+                )
+
+    def test_structure_and_time_errors_fail_before_the_jobs_list_call(self) -> None:
+        self.configuration_path.write_text("workflows: []\n", encoding="utf-8")
+        with self.assertRaises(cli.CommandError):
+            self.select([30])
+        with self.assertRaises(cli.CommandError):
+            self.select([30], completion_time="25:00")
+
+        self.assertEqual(self.logged_commands(), [])
 
     def test_folder_without_project_files_is_rejected(self) -> None:
-        (self.project / cli.SCHEMA_RELATIVE_PATH).unlink()
+        (self.project / cli.LOADER_RELATIVE_PATH).unlink()
 
         with self.assertRaisesRegex(cli.CommandError, "not a workflow monitoring project"):
             self.select([30])
         self.assertEqual(self.logged_commands(), [])
 
 
-class AddWorkflowEntriesTests(unittest.TestCase):
-    jobs = [cli.WorkspaceJob(7, "seven")]
+class InsertionPointTests(unittest.TestCase):
+    entries_yaml = "    - job_id: 7\n"
 
-    def test_entries_go_before_the_next_top_level_key_with_the_list_indent(self) -> None:
+    def insert(self, configuration_text: str) -> str:
+        offset, indent = cli.workflows_insertion_point(configuration_text)
+        self.assertEqual(indent, "    ")
+        return cli.insert_entries(configuration_text, offset, self.entries_yaml)
+
+    def test_entries_go_before_the_next_key_and_its_comment(self) -> None:
         configuration_text = textwrap.dedent(
             """\
             workflows:
                 - job_id: 1
-                  monitoring_status: inactive
-                  sla: {frequency: daily, completion_time: "06:00"}
 
             # Trailing note.
             default_timezone: UTC
-            version: 3
             """
         )
 
-        updated_text = cli.add_workflow_entries(configuration_text, self.jobs, "06:00")
-
-        self.assertIn(
-            '"06:00"}\n    # seven\n    - job_id: 7\n',
-            updated_text,
-        )
-        self.assertTrue(
-            updated_text.endswith("\n# Trailing note.\ndefault_timezone: UTC\nversion: 3\n")
-        )
-
-    def test_empty_list_and_missing_final_newline(self) -> None:
         self.assertEqual(
-            cli.add_workflow_entries("version: 3\nworkflows:", self.jobs, "06:00"),
-            "version: 3\nworkflows:\n" + cli.workflow_entries_yaml(self.jobs, "06:00", "  "),
+            self.insert(configuration_text),
+            "workflows:\n    - job_id: 1\n    - job_id: 7\n\n# Trailing note.\ndefault_timezone: UTC\n",
         )
+
+    def test_missing_final_newline_is_added(self) -> None:
+        self.assertEqual(
+            self.insert("workflows:\n    - job_id: 1"),
+            "workflows:\n    - job_id: 1\n    - job_id: 7\n",
+        )
+
+    def test_empty_list_uses_two_spaces(self) -> None:
+        self.assertEqual(cli.workflows_insertion_point("version: 3\nworkflows:\n"), (22, "  "))
 
 
 class InitProjectTests(FakeDatabricksTestCase):
-    def init(self, *, confirmed: bool) -> tuple[int, list[Path], str]:
-        picked: list[Path] = []
+    def init(self, *, confirmed: bool) -> tuple[int, mock.Mock, str]:
+        pick_jobs = mock.Mock(return_value=5)
         output = io.StringIO()
-
-        def pick_jobs(project_directory: Path) -> int:
-            picked.append(project_directory)
-            return 5
-
         with contextlib.redirect_stdout(output):
             exit_code = cli.init_project(
                 self.root / "out",
@@ -283,13 +262,13 @@ class InitProjectTests(FakeDatabricksTestCase):
                 confirm=lambda _message: confirmed,
                 pick_jobs=pick_jobs,
             )
-        return exit_code, picked, output.getvalue()
+        return exit_code, pick_jobs, output.getvalue()
 
     def test_init_renders_the_cli_release_tag_then_offers_the_picker(self) -> None:
-        exit_code, picked, _output = self.init(confirmed=True)
+        exit_code, pick_jobs, _output = self.init(confirmed=True)
 
         self.assertEqual(exit_code, 5)
-        self.assertEqual(picked, [self.root / "out/new_project"])
+        pick_jobs.assert_called_once_with(self.root / "out/new_project")
         self.assertEqual(
             self.logged_commands(),
             [
@@ -310,16 +289,18 @@ class InitProjectTests(FakeDatabricksTestCase):
         )
 
     def test_declined_picker_prints_the_next_step(self) -> None:
-        exit_code, picked, output = self.init(confirmed=False)
+        exit_code, pick_jobs, output = self.init(confirmed=False)
 
-        self.assertEqual((exit_code, picked), (0, []))
+        self.assertEqual(exit_code, 0)
+        pick_jobs.assert_not_called()
         self.assertIn("select-jobs", output)
 
     def test_failed_bundle_init_returns_its_exit_code(self) -> None:
         with mock.patch.dict(os.environ, {"FAKE_DATABRICKS_EXIT": "4"}):
-            exit_code, picked, _output = self.init(confirmed=True)
+            exit_code, pick_jobs, _output = self.init(confirmed=True)
 
-        self.assertEqual((exit_code, picked), (4, []))
+        self.assertEqual(exit_code, 4)
+        pick_jobs.assert_not_called()
 
 
 class MainTests(FakeDatabricksTestCase):
