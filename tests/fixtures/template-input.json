@@ -1,8 +1,0 @@
-{
-  "project_name": "workflow_monitoring",
-  "catalog": "workflow_monitoring",
-  "schema": "lakeflow_jobs",
-  "create_catalog_and_schema_if_missing": "yes",
-  "default_timezone": "UTC",
-  "dashboard_viewer_group": "users"
-}

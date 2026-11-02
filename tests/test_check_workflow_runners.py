@@ -129,13 +129,8 @@ class RepositoryWorkflowTests(unittest.TestCase):
         dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
 
         uv_version = _step_with_prefix(jobs, "astral-sh/setup-uv")["with"]["version"]
-        databricks_version = _step_with_prefix(jobs, "databricks/setup-cli")["with"]["version"]
 
         self.assertEqual(uv_version, _dockerfile_value(dockerfile, r"astral-sh/uv:([0-9.]+)"))
-        self.assertEqual(
-            databricks_version,
-            _dockerfile_value(dockerfile, r"databricks/setup-cli/v([0-9.]+)/install\.sh"),
-        )
 
 
 def _dockerfile_value(dockerfile: str, pattern: str) -> str:

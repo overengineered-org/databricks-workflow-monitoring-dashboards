@@ -4,7 +4,7 @@ resources:
     workflow_monitoring:
       display_name: ${var.dashboard_display_name}
       # This generated file is tracked so reviewers can inspect the final SQL.
-      file_path: ../workflow_monitoring/dashboard/workflow-monitoring.lvdash.json
+      file_path: ../src/dashboards/workflow-monitoring.lvdash.json
       # The dashboard reads the same tables as the collector.
       dataset_catalog: ${var.catalog}
       dataset_schema: ${var.schema}

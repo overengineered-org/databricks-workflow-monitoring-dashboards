@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=./src/workflow-monitoring.schema.json
+
+# Add Jobs with `uv run workflow-monitoring select-jobs`, or edit this file by hand.
+version: 3
+
+default_timezone: "UTC"
+
+workflows:
+  # Job names come from the Jobs API. Replace this ID, then mark it active.
+  - job_id: 123456
+    monitoring_status: inactive
+    sla:
+      frequency: daily
+      completion_time: "06:00"

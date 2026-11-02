@@ -29,178 +29,66 @@ call the Jobs API directly.
 
 ## Start here
 
-A first dev deployment takes about 10 minutes when your Databricks profile already works.
+A first dev deployment takes about 10 minutes. This repository is the Databricks bundle. You clone
+it, tick the Jobs to monitor, and deploy. The `workflow-monitoring` wrapper runs the Databricks CLI
+commands for you.
 
-### 1. Create the project
+### 1. Install the tools
 
-Do not clone this repository to deploy the dashboard. `databricks bundle init` reads one release
-tag and creates a small project that contains only the deployment files.
-
-You need:
-
-| Tool | Minimum | Use |
+| Tool | Minimum | Install |
 | --- | --- | --- |
-| Databricks CLI | 1.22.1 | Required |
-| [uv](https://docs.astral.sh/uv/) | Any current release | Optional: installs the `workflow-monitoring` CLI |
+| Databricks CLI | 1.22.1 | [Install the Databricks CLI](https://docs.databricks.com/dev-tools/cli/install) |
+| uv | Any current release | [Install uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| Git | Any current release | [Install Git](https://git-scm.com/downloads) |
 
-**With the `workflow-monitoring` CLI (recommended).** Install the CLI once. It creates the project,
-lists the Jobs in your workspace, and adds the Jobs that you tick to `workflow-monitoring.yml`:
-
-```sh
-uv tool install git+https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard@v0.3.1
-databricks auth profiles
-workflow-monitoring init --profile <profile>
-cd workflow_monitoring
-```
-
-`init` runs `databricks bundle init` for the release tag of the CLI, then offers the Job picker
-from [step 3](#3-create-the-configuration). The picker only reads the Jobs list. It starts no
-compute.
-
-**With the Databricks CLI only.**
+On macOS with Homebrew:
 
 ```sh
-databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
-  --tag v0.3.1 \
-  --template-dir template \
-  --output-dir .
-cd workflow_monitoring
+brew tap databricks/tap
+brew install databricks uv git
 ```
 
-v0.2.0 is the first release with the template. v0.3.1 adds the `workflow-monitoring` CLI.
+### 2. Sign in to Databricks
 
-The command creates a project folder named by the `project_name` prompt. The default is
-`workflow_monitoring`. Change the `cd` command if you choose another name. The other prompts set
-the catalog, schema, catalog creation, default timezone, and dashboard viewer group.
-
-The project contains these files:
-
-```text
-workflow_monitoring/
-  .gitignore                                  You own
-  databricks.yml                              You own: bundle variables and targets
-  workflow-monitoring.yml                     You own: monitored Jobs and SLAs
-  resources/
-    workflow-monitoring.collector.job.yml     You own: collector Job and schedule
-    workflow-monitoring.dashboard.yml         You own: dashboard resource
-  workflow_monitoring/                        Product-owned: do not edit
-    README.md                                 Upgrade steps
-    VERSION
-    collector/                                Collector Python files
-    dashboard/workflow-monitoring.lvdash.json
-    workflow-monitoring.schema.json
-```
-
-Do not edit the inner `workflow_monitoring/` folder. To upgrade the product files, replace that
-folder with a newer release. The folder `README.md` has the steps.
-
-Track the project in your own Git repository. The `.gitignore` file excludes the local
-`.databricks/` folder.
+Run this command with your workspace URL. It opens your browser, signs you in, and saves a
+profile. Skip it if `databricks auth profiles` already shows a valid profile for the workspace.
 
 ```sh
-git init
-git add .
-git commit -m "Add workflow monitoring project"
+databricks auth login --host https://dbc-1234.cloud.databricks.com
 ```
 
-### 2. Get the required IDs
+### 3. Clone this repository
 
-Choose a Databricks profile. This project never selects or stores one for you.
+To keep your configuration in your own GitHub repository, fork this repository first and clone
+the fork.
 
 ```sh
-databricks auth profiles
-databricks current-user me --profile <profile>
-
-databricks warehouses list --profile <profile>
-databricks jobs list --profile <profile>
+git clone https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard.git
+cd databricks-jobs-monitoring-dashboard
 ```
 
-Keep the SQL warehouse ID and each Job ID you want to monitor.
-
-Set the warehouse ID in your shell. The bundle commands in this README read it. Set it again in
-each new shell:
+### 4. Tick the Jobs to monitor
 
 ```sh
-export BUNDLE_VAR_warehouse_id=<warehouse-id>
+uv run workflow-monitoring select-jobs
 ```
 
-You can also pass `--var="warehouse_id=<warehouse-id>"` to each bundle command.
-
-### 3. Create the configuration
-
-Tick the Jobs to monitor with the CLI. Run it from the project folder:
-
-```sh
-workflow-monitoring select-jobs --profile <profile>
-```
-
-The picker shows each Job name and ID and marks the Jobs that are already in the file. Press
-space to tick a Job and enter to confirm. The CLI adds each ticked Job as an active daily SLA at
-`06:00` and keeps your comments. Before it writes, it checks the file with the collector rules in
-your project's `workflow_monitoring/` folder.
-
-`init` accepts the same `--name-contains` and `--completion-time` options.
-
-| Option | Use |
-| --- | --- |
-| `--name-contains <text>` | Show only Jobs whose name has this text. |
-| `--completion-time <HH:MM>` | Set the daily SLA time for the new Jobs. |
-| `--dry-run` | Print the new entries and write nothing. |
-
-To use a weekly, fortnightly, or monthly SLA, edit the entry after the CLI adds it. See
-[Choose an SLA schedule](#choose-an-sla-schedule).
-
-Without the CLI, edit `workflow-monitoring.yml` and add your first Job:
-
-```yaml
-version: 3
-
-default_timezone: UTC
-
-workflows:
-  - job_id: <job-id>
-    monitoring_status: active
-    sla:
-      frequency: daily
-      completion_time: "06:00"
-```
-
-The collector reads this file on every run and replaces the active workflow rows in
-`workflow_sla_config`.
-
-The `catalog` and `schema` init prompts set the bundle variables of the same names in
-`databricks.yml`. The `create_catalog_and_schema_if_missing` prompt sets catalog creation:
-
-| Answer | Result |
-| --- | --- |
-| `yes` (default) | The collector creates the catalog and schema when they are missing. The run identity needs the rights to create them. |
-| `no` | You bring an existing catalog and schema. The collector never runs `CREATE CATALOG` or `CREATE SCHEMA`. |
-
-Both answers create the three collector tables when missing. To change the answer later, edit
-the `create_catalog_and_schema_if_missing` default in `databricks.yml`.
-
-### 4. Validate the bundle
-
-```sh
-databricks bundle validate --strict -t dev --profile <profile>
-```
-
-This command checks the bundle files. It does not read `workflow-monitoring.yml`. The collector
-Job run checks that file and lists every error. The `yaml-language-server` schema comment at the
-top of `workflow-monitoring.yml` gives editor checks while you type.
+The CLI asks you to pick one of your signed-in Databricks profiles. It never picks or stores one
+for you. Then it lists the Jobs in the workspace. Press space to tick a Job and enter to confirm.
+Each ticked Job is added to `workflow-monitoring.yml` with an active daily SLA at `06:00`. This
+step only reads from the workspace. It starts no compute.
 
 ### 5. Deploy and load the first data
 
-These commands create workspace resources and run serverless compute:
-
 ```sh
-databricks bundle deploy -t dev --profile <profile>
-
-databricks bundle run workflow_monitoring_jobs_api_collector -t dev --profile <profile>
+uv run workflow-monitoring deploy
 ```
 
-Done means one collector Job, three Delta tables, and one refreshed AI/BI dashboard exist in the
-selected workspace. The dashboard shows data after the first collector run.
+`deploy` asks for the SQL warehouse that runs the dashboard queries and saves it in
+`.databricks/bundle/dev/variable-overrides.json`, a local file that Git ignores. Then it validates
+the bundle, asks you to confirm, deploys to the `dev` target, and runs the collector once. This
+step creates workspace resources and runs serverless compute. When it is done, it prints the
+command that opens the dashboard.
 
 ### 6. Deploy to production
 
@@ -211,28 +99,69 @@ Complete this checklist before the first prod deploy:
 3. Grant dashboard refresh access and SQL warehouse access.
 4. Confirm the viewer group in the bundle settings.
 
-Then validate and deploy the prod target:
+Then deploy the prod target. It asks for its own SQL warehouse the first time.
 
 ```sh
-databricks bundle validate --strict -t prod --profile <profile>
-databricks bundle deploy -t prod --profile <profile>
+uv run workflow-monitoring deploy --target prod
 ```
 
 The prod target unpauses the collector schedule. The collector then runs every 5 minutes on
 serverless compute.
 
+To deploy without the wrapper, follow [Manual setup](docs/manual-setup.md).
+
+## What you change
+
+| File | What to change |
+| --- | --- |
+| `workflow-monitoring.yml` | The monitored Jobs, their SLAs, and `default_timezone`. |
+| `databricks.yml` | Optional: the variable defaults below. |
+
+| Variable | Default | Use |
+| --- | --- | --- |
+| `catalog` | `workflow_monitoring` | Where the collector writes its three tables. |
+| `schema` | `lakeflow_jobs` | Where the collector writes its three tables. |
+| `create_catalog_and_schema_if_missing` | `true` | Set to `false` to use an existing catalog and schema. The collector then never runs `CREATE CATALOG` or `CREATE SCHEMA`. |
+| `dashboard_viewer_group` | `users` | The group that can view the dashboard. |
+
+Do not change the other files. `git pull` updates them. See [Upgrade](#upgrade).
+
 ## Manage monitored Jobs
 
-Run `workflow-monitoring select-jobs --profile <profile>` to add Jobs, or edit
-`workflow-monitoring.yml`. Keep Job IDs unique and valid for the selected SLA schedule.
-Set `monitoring_status` to `inactive` to exclude a Job without deleting its configuration.
+```sh
+uv run workflow-monitoring select-jobs
+uv run workflow-monitoring deploy
+```
 
-Run `databricks bundle deploy` to publish the change. In the prod target, the next scheduled
-collector run applies it. The collector Job runs every 5 minutes on the `0 0/5 * * * ?` schedule
-in UTC, set in `resources/workflow-monitoring.collector.job.yml`. In the dev target, the bundle
-uses `mode: development`, so the schedule is paused and no scheduled run applies the change. In
-dev, run `databricks bundle run workflow_monitoring_jobs_api_collector` as in
-[step 5](#5-deploy-and-load-the-first-data) to apply the change now.
+`select-jobs` marks the Jobs that are already monitored. It keeps your comments, and it checks the
+file with the collector rules before it writes. `deploy` publishes the change. In dev, it also runs
+the collector once. In prod, the next scheduled collector run applies the change.
+
+| Option | Command | Use |
+| --- | --- | --- |
+| `--profile <name>` | Both | Use this profile instead of picking one. |
+| `--name-contains <text>` | `select-jobs` | Show only Jobs whose name has this text. |
+| `--completion-time <HH:MM>` | `select-jobs` | Set the daily SLA time for the new Jobs. |
+| `--dry-run` | `select-jobs` | Print the new entries and write nothing. |
+| `--target dev\|prod` | `deploy` | Choose the bundle target. The default is `dev`. |
+| `--warehouse-id <id>` | `deploy` | Use and save this SQL warehouse for the target. |
+| `--yes` | `deploy` | Deploy without questions. |
+
+To use a weekly, fortnightly, or monthly SLA, or to pause a Job, edit `workflow-monitoring.yml`.
+Set `monitoring_status` to `inactive` to exclude a Job without deleting its configuration. See
+[Choose an SLA schedule](#choose-an-sla-schedule).
+
+### Deploy from CI
+
+Without `--profile`, the wrapper uses the Databricks CLI environment variables when
+`DATABRICKS_HOST` is set. For example, with a service principal:
+
+```sh
+export DATABRICKS_HOST=https://dbc-1234.cloud.databricks.com
+export DATABRICKS_CLIENT_ID=00000000-0000-0000-0000-000000000000
+export DATABRICKS_CLIENT_SECRET="$SERVICE_PRINCIPAL_SECRET"
+uv run workflow-monitoring deploy --target prod --warehouse-id 1234567890abcdef --yes
+```
 
 ## Config errors
 
@@ -249,11 +178,16 @@ the last good run. The dashboard reads those rows, so it keeps the last good con
 
 ## Upgrade
 
-Product files live in `workflow_monitoring/` and are product-owned. To upgrade, render the new
-release tag into a temporary folder, replace your `workflow_monitoring/` folder, apply the
-listed user-owned file changes, then run `databricks bundle deploy`.
+Pull the new release into your clone, then deploy:
 
-The steps are in `workflow_monitoring/README.md` in your rendered project.
+```sh
+git pull
+uv run workflow-monitoring deploy
+```
+
+If you forked the repository, merge the new release tag from this repository into your fork. Only
+`workflow-monitoring.yml` and `databricks.yml` can conflict, and only when you changed them. Read
+the release notes for each version. They list the changes that need an action.
 
 ## Choose an SLA schedule
 
@@ -307,7 +241,7 @@ Collector errors are stored in `workflow_job_api_state` with bounded error text.
 
 The collector retention delete only removes rows of the current workspace. It uses
 `WHERE workspace_id = '<current>'` in the collector at
-`workflow_monitoring/collector/collect_workflow_monitoring_jobs_api.py`.
+`src/collect_workflow_monitoring_jobs_api.py`.
 Rows from an old workspace stay forever.
 
 Get the old workspace ID, then run one delete per table in your SQL editor:
@@ -329,7 +263,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before you change the repository.
 | Goal | Read |
 | --- | --- |
 | Deploy the dashboard | This README |
-| Upgrade the product files | `workflow_monitoring/README.md` in your project |
+| Deploy without the wrapper | [Manual setup](docs/manual-setup.md) |
 | Try disposable sample Jobs | [Fast Logistics example](examples/fast-logistics/README.md) |
 | Change repository code | [Contributing](CONTRIBUTING.md) |
 | Publish a version | [Releasing](RELEASING.md) |
@@ -338,4 +272,4 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before you change the repository.
 ## License
 
 This project uses the [Apache License 2.0](LICENSE).
-Files that you copy from this repository into your project keep this license.
+Files that you copy from this repository keep this license.

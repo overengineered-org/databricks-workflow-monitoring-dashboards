@@ -35,8 +35,7 @@ from workflow_monitoring_config import (
 
 REPOSITORY_ROOT = tests._paths.REPOSITORY_ROOT
 
-TEMPLATE_PROJECT_PATH = REPOSITORY_ROOT / "template/template/{{.project_name}}"
-COLLECTOR_JOB_PATH = TEMPLATE_PROJECT_PATH / "resources/workflow-monitoring.collector.job.yml.tmpl"
+COLLECTOR_JOB_PATH = REPOSITORY_ROOT / "resources/workflow-monitoring.collector.job.yml"
 JOBS_API_COLLECTOR_PATH = REPOSITORY_ROOT / "src/collect_workflow_monitoring_jobs_api.py"
 
 

@@ -29,18 +29,6 @@ jobs:
         run: uv sync --locked
       - name: Build dashboard
         run: uv run python scripts/build_dashboard.py
-      - name: Check built template
-        run: uv run python scripts/build_template.py --check
-      - name: Render bundle template
-        # Render into a temporary project so validation uses the adopter layout.
-        env:
-          DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
-        run: |
-          rm -rf /tmp/workflow-monitoring-template
-          databricks bundle init ./template \
-            --config-file tests/fixtures/template-input.json \
-            --output-dir /tmp/workflow-monitoring-template \
-            --profile "$DATABRICKS_CONFIG_PROFILE"
       - name: Validate SQL datasets
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
@@ -48,13 +36,11 @@ jobs:
         # These names match the bundle variable defaults.
         run: scripts/validate-sql-datasets.sh "$DATABRICKS_CONFIG_PROFILE" "$DATABRICKS_WAREHOUSE_ID" workflow_monitoring lakeflow_jobs
       - name: Validate dev bundle
-        working-directory: /tmp/workflow-monitoring-template/workflow_monitoring
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
           DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
         run: databricks bundle validate --strict -t dev --profile "$DATABRICKS_CONFIG_PROFILE" --var="warehouse_id=$DATABRICKS_WAREHOUSE_ID"
       - name: Validate prod bundle
-        working-directory: /tmp/workflow-monitoring-template/workflow_monitoring
         env:
           DATABRICKS_CONFIG_PROFILE: ${{ secrets.DATABRICKS_CONFIG_PROFILE }}
           DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}

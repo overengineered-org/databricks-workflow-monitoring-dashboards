@@ -16,9 +16,9 @@ GitHub Release.
 
 Before `1.0.0`, an incompatible change normally increments the minor version.
 
-A change to the config format or to a user-owned template file is "Incompatible public
-configuration". The user-owned template files are `.gitignore`, `databricks.yml.tmpl`,
-`workflow-monitoring.yml.tmpl`, and `resources/*.yml.tmpl`. Give that pull request the
+A change to the config format, to `workflow-monitoring.yml`, or to a `databricks.yml` variable is
+"Incompatible public configuration". Adopters edit those files in their clones. Give that pull
+request the
 `upgrade-steps` label and an "Upgrade steps" section in its body. The label sorts the entry into
 the "Upgrade steps" release notes section.
 
@@ -26,10 +26,7 @@ the "Upgrade steps" release notes section.
 
 1. Update `project.version` in `pyproject.toml`.
 2. Run `uv lock` so `uv.lock` has the same version.
-3. Run `uv run python scripts/build_template.py` so `VERSION` and the template copy match.
-4. Update the README `--tag`, the README `uv tool install` tag, and the schema URL tag to
-   `v<version>`.
-5. Merge the approved pull request with squash. The merge publishes `v<version>`.
+3. Merge the approved pull request with squash. The merge publishes `v<version>`.
 
 ## 3. Check without publishing
 
@@ -59,23 +56,18 @@ version-bump pull request with the next patch version instead.
 
 ## 5. Test the published tag
 
-The pinned CLI can ask for credentials during `bundle init`. Fake values keep the render offline.
-The same values are used in `tests/test_bundle_template.py`:
+Clone the tag and check the wrapper offline:
 
 ```sh
-DATABRICKS_HOST=https://example.invalid DATABRICKS_TOKEN=fake \
-databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
-  --tag v<version> --template-dir template --output-dir /tmp/check
+git clone --branch v<version> https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard.git /tmp/check
+cd /tmp/check
+uv run workflow-monitoring --version
 ```
-
-This proves that the remote template renders from the pushed tag. The local check in section 3
-proves that only the local checkout renders.
 
 ## What the release script proves
 
 - The tag matches `project.version` in `pyproject.toml`.
-- The local gate passes, so `VERSION`, the rendered template copy, and the docs tags match that
-  version.
+- The local gate passes on the release commit.
 - Local `main` exactly matches `origin/main`, and the tree is clean.
 - Gitleaks finds no secret in the history.
 - The published tag points to the validated commit.

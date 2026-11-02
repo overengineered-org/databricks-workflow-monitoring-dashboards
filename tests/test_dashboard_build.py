@@ -20,10 +20,9 @@ from scripts.build_dashboard import (
 )
 from tests._paths import REPOSITORY_ROOT
 
-TEMPLATE_PROJECT_PATH = REPOSITORY_ROOT / "template/template/{{.project_name}}"
-TRACKED_CONFIGURATION_PATH = TEMPLATE_PROJECT_PATH / "workflow-monitoring.yml.tmpl"
-COLLECTOR_JOB_PATH = TEMPLATE_PROJECT_PATH / "resources/workflow-monitoring.collector.job.yml.tmpl"
-TEMPLATE_INPUT_PATH = REPOSITORY_ROOT / "tests/fixtures/template-input.json"
+TRACKED_CONFIGURATION_PATH = REPOSITORY_ROOT / "workflow-monitoring.yml"
+COLLECTOR_JOB_PATH = REPOSITORY_ROOT / "resources/workflow-monitoring.collector.job.yml"
+BUNDLE_PATH = REPOSITORY_ROOT / "databricks.yml"
 SCAFFOLD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.scaffold.lvdash.json"
 GENERATED_DASHBOARD_PATH = REPOSITORY_ROOT / "src/dashboards/workflow-monitoring.lvdash.json"
 CUSTOM_VISUALIZATION_DIRECTORY = REPOSITORY_ROOT / "src/visualizations"
@@ -69,13 +68,13 @@ class DashboardGenerationTests(unittest.TestCase):
             self.assertNotIn(marker, dashboard_text)
 
     def test_built_dashboard_contains_no_configured_values(self) -> None:
-        template_input = json.loads(TEMPLATE_INPUT_PATH.read_text(encoding="utf-8"))
+        bundle_variables = yaml.safe_load(BUNDLE_PATH.read_text(encoding="utf-8"))["variables"]
         tracked_configuration = yaml.safe_load(
             TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8")
         )
         configured_values = (
-            template_input["catalog"],
-            template_input["schema"],
+            bundle_variables["catalog"]["default"],
+            bundle_variables["schema"]["default"],
             *(str(workflow["job_id"]) for workflow in tracked_configuration["workflows"]),
         )
 
@@ -318,7 +317,7 @@ class DashboardGenerationTests(unittest.TestCase):
         self.assertNotIn("parameters", collector_job)
         self.assertEqual(
             collector_task["spark_python_task"]["python_file"],
-            "../workflow_monitoring/collector/collect_workflow_monitoring_jobs_api.py",
+            "../src/collect_workflow_monitoring_jobs_api.py",
         )
         self.assertEqual(
             collector_task["spark_python_task"]["parameters"],
@@ -326,7 +325,7 @@ class DashboardGenerationTests(unittest.TestCase):
                 "--config-path",
                 "${workspace.file_path}/workflow-monitoring.yml",
                 "--schema-path",
-                "${workspace.file_path}/workflow_monitoring/workflow-monitoring.schema.json",
+                "${workspace.file_path}/src/workflow-monitoring.schema.json",
                 "--catalog",
                 "${var.catalog}",
                 "--schema",
@@ -349,12 +348,12 @@ class DashboardGenerationTests(unittest.TestCase):
 
 
 class ConfigurationContractTests(unittest.TestCase):
-    """Keep the template configuration structurally valid."""
+    """Keep the tracked configuration structurally valid."""
 
-    def test_template_configuration_has_required_keys(self) -> None:
+    def test_tracked_configuration_has_required_keys(self) -> None:
         configuration = yaml.safe_load(TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8"))
         self.assertEqual(configuration["version"], 3)
-        self.assertEqual(configuration["default_timezone"], "{{.default_timezone}}")
+        self.assertEqual(configuration["default_timezone"], "UTC")
         self.assertTrue(configuration["workflows"])
         for workflow in configuration["workflows"]:
             self.assertIn("job_id", workflow)

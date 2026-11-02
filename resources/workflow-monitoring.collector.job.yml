@@ -21,13 +21,13 @@ resources:
       - task_key: collect_jobs_api_state
         environment_key: workflow_monitoring_collector
         spark_python_task:
-          python_file: ../workflow_monitoring/collector/collect_workflow_monitoring_jobs_api.py
+          python_file: ../src/collect_workflow_monitoring_jobs_api.py
           parameters:
           - --config-path
           - ${workspace.file_path}/workflow-monitoring.yml
           # spark_python_task has no __file__, so pass the schema path explicitly.
           - --schema-path
-          - ${workspace.file_path}/workflow_monitoring/workflow-monitoring.schema.json
+          - ${workspace.file_path}/src/workflow-monitoring.schema.json
           - --catalog
           - ${var.catalog}
           - --schema

@@ -37,13 +37,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # The Databricks CLI keeps the same pin as validate.yml, so the publish job
-      # renders the template with the same CLI version as the pull request gate.
-      - name: Install Databricks CLI
-        if: ${{ !env.ACT }}
-        uses: databricks/setup-cli@8de769ec2543ee05e456ee2121350efc7efc4bda # v1.22.1
-        with:
-          version: "1.22.1"
       - name: Install gitleaks
         if: ${{ !env.ACT }}
         env:

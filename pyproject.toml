@@ -1,6 +1,6 @@
 [project]
 name = "databricks-jobs-monitoring-dashboard"
-version = "0.3.1"
+version = "0.4.0"
 description = "Generate a Jobs API-backed Databricks dashboard for workflow SLA, reliability, and trends."
 readme = "README.md"
 license = "Apache-2.0"
@@ -26,9 +26,9 @@ workflow-monitoring = "workflow_monitoring_cli:main"
 requires = ["hatchling>=1.27.0,<2.0.0"]
 build-backend = "hatchling.build"
 
-# The wheel holds only the CLI. It validates with the loader copy in each project.
+# The CLI runs from a clone with `uv run`. It shares the config rules with the collector.
 [tool.hatch.build.targets.wheel]
-only-include = ["src/workflow_monitoring_cli.py"]
+only-include = ["src/workflow_monitoring_cli.py", "src/workflow_monitoring_config.py"]
 sources = ["src"]
 
 [dependency-groups]

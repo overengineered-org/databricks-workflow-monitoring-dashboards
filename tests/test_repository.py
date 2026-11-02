@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import re
 import subprocess
-import tomllib
 import unittest
 
 import yaml
 
 from tests._paths import REPOSITORY_ROOT
 
-TEMPLATE_PROJECT_PATH = REPOSITORY_ROOT / "template/template/{{.project_name}}"
-TRACKED_CONFIGURATION_PATH = TEMPLATE_PROJECT_PATH / "workflow-monitoring.yml.tmpl"
-TEMPLATE_DATABRICKS_PATH = TEMPLATE_PROJECT_PATH / "databricks.yml.tmpl"
-COLLECTOR_JOB_PATH = TEMPLATE_PROJECT_PATH / "resources/workflow-monitoring.collector.job.yml.tmpl"
+# isort: split
+from workflow_monitoring_cli import MINIMUM_DATABRICKS_CLI_VERSION
+
+BUNDLE_PATH = REPOSITORY_ROOT / "databricks.yml"
 RELEASE_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/release.sh"
 LOCAL_VALIDATION_SCRIPT_PATH = REPOSITORY_ROOT / "scripts/run-local-validation.sh"
 ACT_DOCKERFILE_PATH = REPOSITORY_ROOT / ".act/Dockerfile"
-VALIDATE_WORKFLOW_PATH = REPOSITORY_ROOT / ".github/workflows/validate.yml"
 
 
 class RepositoryContractTests(unittest.TestCase):
@@ -59,11 +57,11 @@ class RepositoryContractTests(unittest.TestCase):
                 )
 
 
-class TemplateAndCliVersionContractTests(unittest.TestCase):
-    """Keep the template minimum CLI version and the pinned CLI versions on one number."""
+class BundleAndCliVersionContractTests(unittest.TestCase):
+    """Keep the bundle minimum, the wrapper minimum, and the Act CLI pin on one number."""
 
-    def test_template_cli_minimum_matches_act_and_validate_pins(self) -> None:
-        bundle_configuration = yaml.safe_load(TEMPLATE_DATABRICKS_PATH.read_text(encoding="utf-8"))
+    def test_bundle_cli_minimum_matches_wrapper_and_act_pin(self) -> None:
+        bundle_configuration = yaml.safe_load(BUNDLE_PATH.read_text(encoding="utf-8"))
         minimum_requirement = bundle_configuration["bundle"]["databricks_cli_version"]
         minimum_version = minimum_requirement.removeprefix(">=").strip()
 
@@ -71,43 +69,10 @@ class TemplateAndCliVersionContractTests(unittest.TestCase):
         dockerfile_pin = re.search(r"setup-cli/v([^/]+)/install\.sh", act_dockerfile)
         self.assertIsNotNone(dockerfile_pin, "act Dockerfile must pin the setup-cli version")
 
-        validate_workflow = VALIDATE_WORKFLOW_PATH.read_text(encoding="utf-8")
-        workflow_pin = re.search(
-            r"uses: databricks/setup-cli@[0-9a-f]+ # v(\d+\.\d+\.\d+)", validate_workflow
-        )
-        self.assertIsNotNone(workflow_pin, "validate workflow must comment the CLI version")
-        workflow_version = re.search(
-            r'uses: databricks/setup-cli@[0-9a-f]+ # v\d+\.\d+\.\d+\n\s+with:\n\s+version: "(\d+\.\d+\.\d+)"',
-            validate_workflow,
-        )
-        self.assertIsNotNone(workflow_version, "validate workflow must set the CLI version")
+        wrapper_minimum = ".".join(str(part) for part in MINIMUM_DATABRICKS_CLI_VERSION)
 
         self.assertEqual(minimum_version, dockerfile_pin.group(1))
-        self.assertEqual(minimum_version, workflow_pin.group(1))
-        self.assertEqual(minimum_version, workflow_version.group(1))
-
-
-class ReleaseVersionReferenceTests(unittest.TestCase):
-    """Keep every tracked tag reference on the version from pyproject.toml."""
-
-    def test_documented_tags_equal_project_version(self) -> None:
-        pyproject_document = tomllib.loads(
-            (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
-        expected_tag = f"v{pyproject_document['project']['version']}"
-
-        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-        readme_tags = re.findall(r"--tag (v\d+\.\d+\.\d+)", readme)
-        self.assertEqual(readme_tags, [expected_tag])
-        cli_install_tags = re.findall(r"uv tool install [^\s@]+@(v\d+\.\d+\.\d+)", readme)
-        self.assertEqual(cli_install_tags, [expected_tag])
-
-        configuration_template = TRACKED_CONFIGURATION_PATH.read_text(encoding="utf-8")
-        schema_tags = re.findall(
-            r"raw\.githubusercontent\.com/[^/]+/[^/]+/(v\d+\.\d+\.\d+)/",
-            configuration_template,
-        )
-        self.assertEqual(schema_tags, [expected_tag])
+        self.assertEqual(minimum_version, wrapper_minimum)
 
 
 class ShellScriptContractTests(unittest.TestCase):
