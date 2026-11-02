@@ -1,8 +1,8 @@
 # Agent guide
 
-This file is for every coding agent and every human contributor. Codex, Cursor, GitHub Copilot,
-Jules, Amp, Zed, and other tools read `AGENTS.md` directly. `CLAUDE.md` imports it for Claude
-Code. Keep project rules here, in one copy.
+This file is for every coding agent and every human contributor. Claude Code, Codex, Cursor,
+GitHub Copilot, Jules, Amp, Zed, and other tools read `AGENTS.md` directly. The repository has no
+tool-specific instruction files. Keep project rules here, in one copy.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) explains the same workflow for humans.
 [docs/maintainers.md](docs/maintainers.md) holds extra rules for maintainers. Contributors do not

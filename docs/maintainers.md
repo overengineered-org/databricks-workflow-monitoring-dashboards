@@ -5,8 +5,14 @@ These rules apply to maintainers and to the agents that work for them. Contribut
 
 To make your own agent follow this page, load it from a personal file:
 
-- Claude Code: create `CLAUDE.local.md` in the repository root with the line
-  `@docs/maintainers.md`. Git ignores that file.
+- Claude Code: create `CLAUDE.local.md` in the repository root with these two lines. Git ignores
+  that file. A `CLAUDE.local.md` stops Claude Code from reading `AGENTS.md` by itself, so import
+  both files:
+
+  ```text
+  @AGENTS.md
+  @docs/maintainers.md
+  ```
 - Codex: Codex has no imports, and an `AGENTS.override.md` replaces `AGENTS.md`. Add this page's
   rules to your personal `~/.codex/AGENTS.md` instead.
 
