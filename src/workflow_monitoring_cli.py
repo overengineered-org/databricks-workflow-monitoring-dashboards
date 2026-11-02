@@ -1,9 +1,8 @@
-"""Create a workflow monitoring project and pick the Jobs it monitors."""
+"""Pick the Jobs to monitor and deploy this repository's Databricks bundle."""
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -15,19 +14,28 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
+from typing import Any
 
 import yaml
 
-REPOSITORY_URL = "https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard"
+from workflow_monitoring_config import load_workflow_monitoring_configuration
+
 DISTRIBUTION_NAME = "databricks-jobs-monitoring-dashboard"
+MINIMUM_DATABRICKS_CLI_VERSION = (1, 22, 1)
 CONFIGURATION_FILE_NAME = "workflow-monitoring.yml"
-# The project's own product files define the rules, so the CLI checks the file exactly
-# like the collector version that the project deploys.
-SCHEMA_RELATIVE_PATH = Path("workflow_monitoring/workflow-monitoring.schema.json")
-LOADER_RELATIVE_PATH = Path("workflow_monitoring/collector/workflow_monitoring_config.py")
+BUNDLE_FILE_NAME = "databricks.yml"
+SCHEMA_RELATIVE_PATH = Path("src/workflow-monitoring.schema.json")
+COLLECTOR_JOB_KEY = "workflow_monitoring_jobs_api_collector"
+DASHBOARD_KEY = "workflow_monitoring"
+BUNDLE_TARGETS = ("dev", "prod")
 DEFAULT_COMPLETION_TIME = "06:00"
 WORKFLOWS_KEY_PATTERN = re.compile(r"^workflows:[ \t]*(#.*)?$")
+EMPTY_WORKFLOWS_PATTERN = re.compile(r"^workflows:[ \t]*\[[ \t]*\]([ \t]*(?:#.*)?)$", re.MULTILINE)
 LIST_ITEM_INDENT_PATTERN = re.compile(r"^([ \t]*)- ")
+SIGN_IN_HINT = (
+    "Sign in to your workspace with 'databricks auth login --host <workspace-url>', "
+    "then run this command again."
+)
 
 
 class CommandError(Exception):
@@ -42,31 +50,91 @@ class WorkspaceJob:
     name: str
 
 
-JobChooser = Callable[[Sequence[WorkspaceJob], set[int]], list[int]]
-Confirmer = Callable[[str], bool]
+@dataclass(frozen=True)
+class Prompts:
+    """The interactive questions, replaceable in tests."""
+
+    choose_one: Callable[[str, Sequence[tuple[str, str]]], str | None]
+    choose_jobs: Callable[[Sequence[WorkspaceJob], set[int]], list[int]]
+    confirm: Callable[[str], bool]
 
 
-def _run_databricks(arguments: list[str], *, capture: bool) -> subprocess.CompletedProcess:
+def _run_databricks(
+    arguments: list[str], *, capture: bool, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
-            ["databricks", *arguments], capture_output=capture, text=True, check=False
+            ["databricks", *arguments], capture_output=capture, text=True, check=False, cwd=cwd
         )
     except FileNotFoundError as error:
-        raise CommandError("Databricks CLI not found. Install it, then try again.") from error
+        raise CommandError(
+            "Databricks CLI not found. Install it from "
+            "https://docs.databricks.com/dev-tools/cli/install, then try again."
+        ) from error
 
 
-def list_workspace_jobs(profile: str) -> list[WorkspaceJob]:
+def _databricks_json(arguments: list[str]) -> Any:
+    completed = _run_databricks([*arguments, "--output", "json"], capture=True)
+    command_text = " ".join(["databricks", *arguments[:2]])
+    if completed.returncode != 0:
+        raise CommandError(f"{command_text} failed: {completed.stderr.strip()}")
+    try:
+        return json.loads(completed.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise CommandError(f"{command_text} returned invalid JSON: {error}") from error
+
+
+def _profile_options(profile: str | None) -> list[str]:
+    # No profile means the Databricks CLI uses DATABRICKS_HOST and its credential variables.
+    return ["--profile", profile] if profile else []
+
+
+def check_databricks_cli() -> None:
+    """Stop early when the Databricks CLI is missing or older than the bundle needs."""
+
+    version_text = _databricks_json(["version"])["Version"]
+    # Source builds report 0.0.0-dev and have every current feature.
+    if "dev" in version_text:
+        return
+    installed = tuple(int(part) for part in re.findall(r"\d+", version_text)[:3])
+    if installed < MINIMUM_DATABRICKS_CLI_VERSION:
+        minimum = ".".join(str(part) for part in MINIMUM_DATABRICKS_CLI_VERSION)
+        raise CommandError(f"Databricks CLI {version_text} is too old. Install {minimum} or later.")
+
+
+def resolve_profile(profile: str | None, prompts: Prompts) -> str | None:
+    """Return the profile to use, or None for environment variable auth.
+
+    The user always picks the profile. The CLI never picks one for them. A profile in
+    DATABRICKS_CONFIG_PROFILE is the user's own choice, as it is for the Databricks CLI.
+    """
+
+    profile = profile or os.environ.get("DATABRICKS_CONFIG_PROFILE")
+    if profile or os.environ.get("DATABRICKS_HOST"):
+        if _run_databricks(
+            ["current-user", "me", *_profile_options(profile)], capture=True
+        ).returncode:
+            raise CommandError(f"Databricks authentication failed. {SIGN_IN_HINT}")
+        return profile
+
+    profiles = _databricks_json(["auth", "profiles"]).get("profiles") or []
+    choices = [
+        (f"{entry['name']} ({entry.get('host', 'unknown host')})", entry["name"])
+        for entry in profiles
+        if entry.get("valid")
+    ]
+    if not choices:
+        raise CommandError(f"No signed-in Databricks profile found. {SIGN_IN_HINT}")
+    selected = prompts.choose_one("Databricks profile:", choices)
+    if not selected:
+        raise CommandError("No profile selected.")
+    return selected
+
+
+def list_workspace_jobs(profile: str | None) -> list[WorkspaceJob]:
     """Read every Job in the workspace with the read-only Jobs list API."""
 
-    completed = _run_databricks(
-        ["jobs", "list", "--output", "json", "--profile", profile], capture=True
-    )
-    if completed.returncode != 0:
-        raise CommandError(f"databricks jobs list failed: {completed.stderr.strip()}")
-    try:
-        job_documents = json.loads(completed.stdout or "[]")
-    except json.JSONDecodeError as error:
-        raise CommandError(f"databricks jobs list returned invalid JSON: {error}") from error
+    job_documents = _databricks_json(["jobs", "list", *_profile_options(profile)]) or []
     jobs = [
         WorkspaceJob(
             job_id=int(job_document["job_id"]),
@@ -75,6 +143,53 @@ def list_workspace_jobs(profile: str) -> list[WorkspaceJob]:
         for job_document in job_documents
     ]
     return sorted(jobs, key=lambda job: (job.name.casefold(), job.job_id))
+
+
+def variable_overrides_path(project_directory: Path, target: str) -> Path:
+    """Return the git-ignored bundle variable file that the Databricks CLI reads per target."""
+
+    return project_directory / ".databricks" / "bundle" / target / "variable-overrides.json"
+
+
+def _read_overrides(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        overrides = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise CommandError(f"{path} is not valid JSON: {error}. Fix or delete it.") from error
+    if not isinstance(overrides, dict):
+        raise CommandError(f"{path} must hold a JSON object. Fix or delete it.")
+    return overrides
+
+
+def saved_warehouse_id(project_directory: Path, target: str) -> str | None:
+    return _read_overrides(variable_overrides_path(project_directory, target)).get("warehouse_id")
+
+
+def save_warehouse_id(project_directory: Path, target: str, warehouse_id: str) -> None:
+    """Save the warehouse for one target, keeping any other override values."""
+
+    path = variable_overrides_path(project_directory, target)
+    overrides = _read_overrides(path)
+    overrides["warehouse_id"] = warehouse_id
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(overrides, indent=2) + "\n", encoding="utf-8")
+
+
+def choose_warehouse_id(profile: str | None, target: str, prompts: Prompts) -> str:
+    """Let the user pick the SQL warehouse for one target."""
+
+    warehouses = _databricks_json(["warehouses", "list", *_profile_options(profile)]) or []
+    if not warehouses:
+        raise CommandError("No SQL warehouse found. Create one in the workspace, then try again.")
+    warehouse_id = prompts.choose_one(
+        f"SQL warehouse for the {target} dashboard:",
+        [(f"{warehouse['name']} ({warehouse['id']})", warehouse["id"]) for warehouse in warehouses],
+    )
+    if not warehouse_id:
+        raise CommandError("No SQL warehouse selected.")
+    return warehouse_id
 
 
 def configured_job_ids(configuration_text: str) -> set[int]:
@@ -153,15 +268,7 @@ def insert_entries(configuration_text: str, offset: int, entries_yaml: str) -> s
 def validated_temporary_configuration(
     project_directory: Path, configuration_text: str
 ) -> Iterator[Path]:
-    """Yield a temporary copy of the text that passed the project's collector rules."""
-
-    loader_spec = importlib.util.spec_from_file_location(
-        "project_workflow_monitoring_config", project_directory / LOADER_RELATIVE_PATH
-    )
-    loader_module = importlib.util.module_from_spec(loader_spec)
-    # Dataclasses look up their module in sys.modules while the module runs.
-    sys.modules[loader_spec.name] = loader_module
-    loader_spec.loader.exec_module(loader_module)
+    """Yield a temporary copy of the text that passed the collector rules."""
 
     file_descriptor, temporary_name = tempfile.mkstemp(
         dir=project_directory, prefix=".workflow-monitoring.", suffix=".yml"
@@ -171,7 +278,7 @@ def validated_temporary_configuration(
         with os.fdopen(file_descriptor, "w", encoding="utf-8") as temporary_file:
             temporary_file.write(configuration_text)
         try:
-            loader_module.load_workflow_monitoring_configuration(
+            load_workflow_monitoring_configuration(
                 temporary_path, project_directory / SCHEMA_RELATIVE_PATH
             )
         except ValueError as error:
@@ -181,6 +288,15 @@ def validated_temporary_configuration(
         yield temporary_path
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def require_project(project_directory: Path) -> None:
+    required = (BUNDLE_FILE_NAME, CONFIGURATION_FILE_NAME, SCHEMA_RELATIVE_PATH)
+    if not all((project_directory / path).is_file() for path in required):
+        raise CommandError(
+            f"{project_directory} is not the root of a databricks-jobs-monitoring-dashboard "
+            "clone. Run this command there, or pass --project-dir."
+        )
 
 
 def _require_valid_completion_time(schema_path: Path, completion_time: str) -> None:
@@ -193,28 +309,21 @@ def _require_valid_completion_time(schema_path: Path, completion_time: str) -> N
 
 def select_jobs(
     project_directory: Path,
-    profile: str,
+    profile: str | None,
     *,
     name_contains: str | None,
     completion_time: str,
     dry_run: bool,
-    choose_jobs: JobChooser,
-    confirm: Confirmer,
+    prompts: Prompts,
 ) -> int:
-    """Let the user tick Jobs, then add them to the project configuration."""
+    """Let the user tick Jobs, then add them to workflow-monitoring.yml."""
 
+    _require_valid_completion_time(project_directory / SCHEMA_RELATIVE_PATH, completion_time)
     configuration_path = project_directory / CONFIGURATION_FILE_NAME
-    schema_path = project_directory / SCHEMA_RELATIVE_PATH
-    if not all(
-        path.is_file()
-        for path in (configuration_path, schema_path, project_directory / LOADER_RELATIVE_PATH)
-    ):
-        raise CommandError(
-            f"{project_directory} is not a workflow monitoring project. It needs "
-            f"{CONFIGURATION_FILE_NAME}, {SCHEMA_RELATIVE_PATH}, and {LOADER_RELATIVE_PATH}."
-        )
-    _require_valid_completion_time(schema_path, completion_time)
-    configuration_text = configuration_path.read_text(encoding="utf-8")
+    # The tracked file starts with an empty flow list. Block style lets entries keep comments.
+    configuration_text = EMPTY_WORKFLOWS_PATTERN.sub(
+        r"workflows:\1", configuration_path.read_text(encoding="utf-8"), count=1
+    )
     offset, indent = workflows_insertion_point(configuration_text)
     monitored_job_ids = configured_job_ids(configuration_text)
 
@@ -225,12 +334,13 @@ def select_jobs(
         print("No Jobs found. Nothing changed.")
         return 0
 
-    selected_job_ids = set(choose_jobs(jobs, monitored_job_ids)) - monitored_job_ids
+    selected_job_ids = set(prompts.choose_jobs(jobs, monitored_job_ids)) - monitored_job_ids
     selected_jobs = [job for job in jobs if job.job_id in selected_job_ids]
     if not selected_jobs:
         print("No new Jobs selected. Nothing changed.")
         return 0
 
+    job_count = f"{len(selected_jobs)} Job" + ("s" if len(selected_jobs) != 1 else "")
     entries_yaml = workflow_entries_yaml(selected_jobs, completion_time, indent)
     updated_text = insert_entries(configuration_text, offset, entries_yaml)
     with validated_temporary_configuration(project_directory, updated_text) as temporary_path:
@@ -238,61 +348,88 @@ def select_jobs(
         if dry_run:
             print("Dry run. Nothing changed.")
             return 0
-        if not confirm(f"Add {len(selected_jobs)} Jobs to {CONFIGURATION_FILE_NAME}?"):
+        if not prompts.confirm(f"Add {job_count} to {CONFIGURATION_FILE_NAME}?"):
             print("Cancelled. Nothing changed.")
             return 0
         os.replace(temporary_path, configuration_path)
 
     print(
-        f"Added {len(selected_jobs)} Jobs with a daily {completion_time} SLA. "
-        f"Edit {CONFIGURATION_FILE_NAME} to change a schedule, then run databricks bundle deploy."
+        f"Added {job_count} with a daily {completion_time} SLA. To change a schedule, edit "
+        f"{CONFIGURATION_FILE_NAME}. Then run 'uv run workflow-monitoring deploy'."
     )
     return 0
 
 
-def init_project(
-    output_directory: Path,
-    profile: str,
+def deploy_project(
+    project_directory: Path,
+    profile: str | None,
     *,
-    confirm: Confirmer,
-    pick_jobs: Callable[[Path], int],
+    target: str,
+    warehouse_id: str | None,
+    assume_yes: bool,
+    prompts: Prompts,
 ) -> int:
-    """Render the bundle template for this CLI version, then offer the Job picker."""
+    """Validate and deploy the bundle. In dev, also run the collector once."""
 
-    output_directory.mkdir(parents=True, exist_ok=True)
-    existing_projects = _project_directories(output_directory)
-    # The tag is the CLI's own version, so a local development install needs a published tag.
-    completed = _run_databricks(
-        [
-            "bundle",
-            "init",
-            REPOSITORY_URL,
-            "--tag",
-            f"v{version(DISTRIBUTION_NAME)}",
-            "--template-dir",
-            "template",
-            "--output-dir",
-            str(output_directory),
-            "--profile",
-            profile,
-        ],
-        capture=False,
+    if warehouse_id:
+        save_warehouse_id(project_directory, target, warehouse_id)
+    elif not saved_warehouse_id(project_directory, target):
+        if assume_yes:
+            raise CommandError(f"No SQL warehouse saved for {target}. Pass --warehouse-id.")
+        save_warehouse_id(project_directory, target, choose_warehouse_id(profile, target, prompts))
+    print(f"Using SQL warehouse {saved_warehouse_id(project_directory, target)} for {target}.")
+
+    bundle_options = ["-t", target, *_profile_options(profile)]
+    validated = _run_databricks(
+        ["bundle", "validate", "--strict", *bundle_options], capture=False, cwd=project_directory
     )
-    if completed.returncode != 0:
-        return completed.returncode
+    if validated.returncode:
+        return validated.returncode
 
-    new_projects = sorted(_project_directories(output_directory) - existing_projects)
-    if len(new_projects) != 1:
-        print("Run 'workflow-monitoring select-jobs' in the new project folder.")
+    if target == "dev":
+        cost_note = (
+            "This creates the collector Job, three tables, and the dashboard, then runs the "
+            "collector once on serverless compute. The run refreshes the dashboard, which "
+            "starts the SQL warehouse."
+        )
+    else:
+        cost_note = (
+            "This creates the prod resources and unpauses the collector schedule. The collector "
+            "then runs on serverless compute every 5 minutes, and each run starts the SQL "
+            "warehouse to refresh the dashboard."
+        )
+    print(cost_note)
+    if not assume_yes and not prompts.confirm(f"Deploy to {target}?"):
+        print("Cancelled. Nothing deployed.")
         return 0
-    if not confirm("Select the Jobs to monitor now?"):
-        print(f"Run 'workflow-monitoring select-jobs' in {new_projects[0]} later.")
-        return 0
-    return pick_jobs(new_projects[0])
+
+    deployed = _run_databricks(
+        ["bundle", "deploy", *bundle_options], capture=False, cwd=project_directory
+    )
+    if deployed.returncode:
+        return deployed.returncode
+    if target == "dev":
+        collected = _run_databricks(
+            ["bundle", "run", COLLECTOR_JOB_KEY, *bundle_options],
+            capture=False,
+            cwd=project_directory,
+        )
+        if collected.returncode:
+            return collected.returncode
+
+    print(
+        f"\nDone. Open the dashboard with:\n\n"
+        f"  databricks bundle open {DASHBOARD_KEY} {' '.join(bundle_options)}\n"
+    )
+    return 0
 
 
-def _project_directories(output_directory: Path) -> set[Path]:
-    return {path.parent for path in output_directory.glob(f"*/{CONFIGURATION_FILE_NAME}")}
+def _ask_one(message: str, choices: Sequence[tuple[str, str]]) -> str | None:
+    import questionary
+
+    return questionary.select(
+        message, choices=[questionary.Choice(title=title, value=value) for title, value in choices]
+    ).ask()
 
 
 def _ask_jobs(jobs: Sequence[WorkspaceJob], monitored_job_ids: set[int]) -> list[int]:
@@ -318,59 +455,74 @@ def _ask_confirm(message: str) -> bool:
     return bool(questionary.confirm(message, default=False).ask())
 
 
+INTERACTIVE_PROMPTS = Prompts(choose_one=_ask_one, choose_jobs=_ask_jobs, confirm=_ask_confirm)
+
+
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workflow-monitoring", description=__doc__)
     parser.add_argument("--version", action="version", version=version(DISTRIBUTION_NAME))
     subcommands = parser.add_subparsers(dest="command", required=True)
 
-    picker_options = argparse.ArgumentParser(add_help=False)
-    # Never pick a Databricks profile for the user.
-    picker_options.add_argument("--profile", required=True, help="Databricks CLI profile to use")
-    picker_options.add_argument("--name-contains", help="show only Jobs whose name has this text")
-    picker_options.add_argument(
+    shared_options = argparse.ArgumentParser(add_help=False)
+    shared_options.add_argument(
+        "--profile",
+        help="Databricks CLI profile. Without it, the CLI asks you to pick one, "
+        "or uses DATABRICKS_HOST when that variable is set.",
+    )
+    shared_options.add_argument(
+        "--project-dir", type=Path, default=Path("."), help="repository root (default: .)"
+    )
+
+    select_parser = subcommands.add_parser(
+        "select-jobs", parents=[shared_options], help="tick the Jobs to monitor"
+    )
+    select_parser.add_argument("--name-contains", help="show only Jobs whose name has this text")
+    select_parser.add_argument(
         "--completion-time",
         default=DEFAULT_COMPLETION_TIME,
         help="daily SLA time for new Jobs, HH:MM",
     )
-
-    init_parser = subcommands.add_parser(
-        "init", parents=[picker_options], help="create a new monitoring project"
-    )
-    init_parser.add_argument("--output-dir", type=Path, default=Path("."))
-
-    select_parser = subcommands.add_parser(
-        "select-jobs", parents=[picker_options], help="tick Jobs to monitor"
-    )
-    select_parser.add_argument("--project-dir", type=Path, default=Path("."))
     select_parser.add_argument(
         "--dry-run", action="store_true", help="print the new entries, write nothing"
+    )
+
+    deploy_parser = subcommands.add_parser(
+        "deploy", parents=[shared_options], help="validate and deploy the bundle"
+    )
+    deploy_parser.add_argument("--target", choices=BUNDLE_TARGETS, default="dev")
+    deploy_parser.add_argument(
+        "--warehouse-id", help="SQL warehouse for this target. Saved for the next deploy."
+    )
+    deploy_parser.add_argument(
+        "--yes", action="store_true", help="deploy without questions, for example in CI"
     )
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, prompts: Prompts = INTERACTIVE_PROMPTS) -> int:
     arguments = _build_argument_parser().parse_args(argv)
-
-    def pick_jobs(project_directory: Path, dry_run: bool = False) -> int:
-        return select_jobs(
-            project_directory,
-            arguments.profile,
-            name_contains=arguments.name_contains,
-            completion_time=arguments.completion_time,
-            dry_run=dry_run,
-            choose_jobs=_ask_jobs,
-            confirm=_ask_confirm,
-        )
-
     try:
-        if arguments.command == "init":
-            return init_project(
-                arguments.output_dir,
-                arguments.profile,
-                confirm=_ask_confirm,
-                pick_jobs=pick_jobs,
+        # Check the folder first, so a wrong folder fails before any network call.
+        require_project(arguments.project_dir)
+        check_databricks_cli()
+        profile = resolve_profile(arguments.profile, prompts)
+        if arguments.command == "select-jobs":
+            return select_jobs(
+                arguments.project_dir,
+                profile,
+                name_contains=arguments.name_contains,
+                completion_time=arguments.completion_time,
+                dry_run=arguments.dry_run,
+                prompts=prompts,
             )
-        return pick_jobs(arguments.project_dir, arguments.dry_run)
+        return deploy_project(
+            arguments.project_dir,
+            profile,
+            target=arguments.target,
+            warehouse_id=arguments.warehouse_id,
+            assume_yes=arguments.yes,
+            prompts=prompts,
+        )
     except CommandError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

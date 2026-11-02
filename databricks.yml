@@ -1,5 +1,5 @@
 bundle:
-  name: "{{.project_name}}"
+  name: workflow_monitoring
   # Keep local, Act, and deployment behavior on the reviewed CLI generation.
   databricks_cli_version: ">= 1.22.1"
 
@@ -7,26 +7,43 @@ bundle:
 include:
   - resources/*.yml
 
-# The warehouse is BYO and required at command time. No workspace-specific ID
-# or Databricks profile is stored in this public bundle.
+# Keep repository tooling out of the workspace. The collector reads workflow-monitoring.yml and
+# src/. The dashboard file stays synced, because the dashboard resource reads it.
+sync:
+  exclude:
+    - "*.md"
+    - .act/**
+    - .codex/**
+    - .github/**
+    - docs/**
+    - examples/**
+    - pyproject.toml
+    - scripts/**
+    - tests/**
+    - uv.lock
+    - src/visualizations/**
+    - src/workflow_monitoring_cli.py
+
+# The warehouse is BYO. `workflow-monitoring deploy` saves it per target in the git-ignored
+# .databricks/bundle/<target>/variable-overrides.json. No workspace ID or profile is stored here.
 variables:
   warehouse_id:
     description: SQL warehouse ID used by the dashboard
   catalog:
     description: Unity Catalog catalog for collector tables
-    default: "{{.catalog}}"
+    default: workflow_monitoring
   schema:
     description: Unity Catalog schema for collector tables
-    default: "{{.schema}}"
+    default: lakeflow_jobs
   create_catalog_and_schema_if_missing:
     description: Create the configured catalog and schema when the collector starts
-    default: '{{ if eq .create_catalog_and_schema_if_missing "yes" }}true{{ else }}false{{ end }}'
+    default: "true"
   dashboard_display_name:
     description: Deployed dashboard display name
     default: Databricks Workflow Monitoring Dashboard
   dashboard_viewer_group:
     description: Databricks group granted CAN_READ
-    default: "{{.dashboard_viewer_group}}"
+    default: users
 
 targets:
   # Development mode adds the standard Databricks development safeguards.

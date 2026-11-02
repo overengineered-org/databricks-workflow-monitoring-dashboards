@@ -27,10 +27,8 @@ local gate actions. The full gate uses the same wrapper as section 3.
 
 The local checks need the Python version in `requires-python` in `pyproject.toml` and the
 `uv` version pinned in `.act/Dockerfile`.
-Users need only the Databricks CLI. The optional `workflow-monitoring` CLI in
-`src/workflow_monitoring_cli.py` installs with `uv tool install` from a release tag. Its `init`
-command renders the tag of its own version, so a local install of an unreleased version cannot run
-`init`. `select-jobs` works with any install.
+Users need the Databricks CLI, uv, and Git. They run the `workflow-monitoring` wrapper in
+`src/workflow_monitoring_cli.py` from their clone with `uv run`.
 The required local Act gate also needs Git, `act`, and a running Docker
 daemon. Start Docker Desktop on macOS or the Docker daemon on Linux before running the gate.
 The Act image supplies `jq` and the pinned Databricks CLI; they are not host
@@ -67,10 +65,9 @@ warehouse IDs, or organization-specific Job details.
 | Public YAML format | `src/workflow-monitoring.schema.json` |
 | Dashboard build | `scripts/build_dashboard.py` |
 | Jobs API collector | `src/collect_workflow_monitoring_jobs_api.py` |
-| Collector Job | `template/template/{{.project_name}}/resources/workflow-monitoring.collector.job.yml.tmpl` |
-| Bundle resources | `template/template/{{.project_name}}/databricks.yml.tmpl` or its `resources/` |
-| Bundle template prompts | `template/databricks_template_schema.json` |
-| Product files copied into the template | `scripts/build_template.py` |
+| Collector Job | `resources/workflow-monitoring.collector.job.yml` |
+| Bundle resources | `databricks.yml` or `resources/` |
+| `workflow-monitoring` wrapper | `src/workflow_monitoring_cli.py` |
 | Dashboard | `src/dashboards/workflow-monitoring.scaffold.lvdash.json` |
 | Dashboard dataset SQL | `src/dashboards/sql/*.sql` |
 | Shared dashboard SQL fragments | `src/dashboards/sql/fragments/*.sql` |
@@ -79,19 +76,17 @@ warehouse IDs, or organization-specific Job details.
 | Vega-Lite chart | `src/visualizations/*.vega.json` |
 | User documentation | `README.md` |
 
-Never edit the built dashboard or the copied product files under
-`template/template/{{.project_name}}/workflow_monitoring/` directly. Maintainers change the
-dashboard scaffold, a dataset SQL file, or a Vega-Lite file, then run:
+Never edit the built dashboard directly. Maintainers change the dashboard scaffold, a dataset SQL
+file, or a Vega-Lite file, then run:
 
 ```sh
 uv run python scripts/build_dashboard.py
-uv run python scripts/build_template.py
 ```
 
-Commit the built dashboard and the refreshed template copy.
+Commit the built dashboard.
 
-The collector Job and bundle files are Go templates under `template/template/{{.project_name}}/`.
-Keep the bundle resource key `workflow_monitoring` and the Job task keys stable.
+Keep the bundle name, the dashboard resource key `workflow_monitoring`, the collector Job key, and
+the Job task keys stable. Adopters deploy with them.
 
 User-facing behavior belongs in the README:
 
@@ -109,7 +104,6 @@ Use targeted checks while editing:
 uv run ruff format --check .
 uv run ruff check .
 uv run python -m unittest discover -s tests -v
-uv run python scripts/build_template.py --check
 ```
 
 Before opening a pull request, run the required local gate:
@@ -132,9 +126,9 @@ matches the #43 rule: only releases at least 7 days old are proposed.
 A `jsonschema` or `pyyaml` bump fails `test_collector_environment_pins_match_uv_lock`. Fix it by
 pushing the collector Job pin change to the Dependabot branch.
 
-A `databricks/setup-cli` bump fails `test_template_cli_minimum_matches_act_and_validate_pins`.
-Fix it by bumping the CLI in `.act/Dockerfile`, the template minimum, and the README table on the
-Dependabot branch, with #43 rules.
+A Databricks CLI bump fails `test_bundle_cli_minimum_matches_wrapper_and_act_pin`. Fix it by
+bumping the CLI in `.act/Dockerfile`, the `databricks.yml` minimum, `MINIMUM_DATABRICKS_CLI_VERSION`
+in the wrapper, and the README table, with #43 rules.
 
 Docker image tools are bumped by hand. Review a major update by its release notes.
 

@@ -5,7 +5,7 @@ databricks_profile="${1:-}"
 warehouse_id="${2:-}"
 catalog="${3:-}"
 schema="${4:-}"
-default_dashboard_path="template/template/{{.project_name}}/workflow_monitoring/dashboard/workflow-monitoring.lvdash.json"
+default_dashboard_path="src/dashboards/workflow-monitoring.lvdash.json"
 dashboard_path="${5:-$default_dashboard_path}"
 
 if [[ -z "$databricks_profile" || -z "$warehouse_id" || -z "$catalog" || -z "$schema" ]]; then

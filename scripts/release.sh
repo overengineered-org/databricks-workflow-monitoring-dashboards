@@ -3,7 +3,6 @@ set -euo pipefail
 
 release_action="${1:-}"
 release_tag="${2:-}"
-cleanup_render_directory=""
 
 show_usage() {
   echo "usage: scripts/release.sh <--check|--publish> <vMAJOR.MINOR.PATCH> | --publish-on-merge"
@@ -87,7 +86,7 @@ publish_on_merge() {
     echo "no new version: $tag exists"
     exit 0
   fi
-  require_commands git gh gitleaks databricks
+  require_commands git gh gitleaks
   if gh release view "$tag" >/dev/null 2>&1; then
     echo "GitHub Release exists without tag: $tag" >&2
     exit 1
@@ -102,17 +101,6 @@ publish_on_merge() {
     echo "HEAD $head_commit does not equal GITHUB_SHA $GITHUB_SHA" >&2
     exit 1
   fi
-  local render_directory
-  render_directory="$(mktemp -d)"
-  # A function-local name is unbound when the EXIT trap runs after the function
-  # returns, and set -u then fails. The global name stays bound.
-  cleanup_render_directory="$render_directory"
-  trap 'rm -rf "$cleanup_render_directory"' EXIT
-  DATABRICKS_HOST=https://example.invalid \
-  DATABRICKS_TOKEN=fake \
-    databricks bundle init template \
-      --config-file tests/fixtures/template-input.json \
-      --output-dir "$render_directory"
   scan_for_secrets
   publish_release "$tag" "$GITHUB_SHA"
 }
