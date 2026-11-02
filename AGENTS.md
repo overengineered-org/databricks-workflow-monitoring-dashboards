@@ -43,15 +43,19 @@ available:
 scripts/run-local-validation.sh
 ```
 
-GitHub runs the same workflow on each pull request. If you cannot run the full gate, say so in the
-pull request. Never claim a check that you did not run.
+Do not bypass `scripts/run-local-validation.sh` with a direct `act` command. GitHub runs the same
+workflow on each pull request. If you cannot run the full gate, say so in the pull request. Never
+claim a check that you did not run.
 
 ## Project rules
 
 ### Source files
 
-- Use fake account values in all tracked files: no workspace URL, workspace ID, warehouse ID,
-  profile, token, or real Job ID.
+- In this upstream repository, use fake account values in all tracked files: no workspace URL,
+  workspace ID, warehouse ID, profile, token, or real Job ID.
+- In an adopter's fork or clone, `workflow-monitoring.yml` lists the adopter's real Job IDs. Keep
+  them. Never commit tokens, profiles, workspace URLs, or warehouse IDs there either. The wrapper
+  saves the warehouse in the git-ignored `.databricks/` folder.
 - Edit the dashboard scaffold, a dataset SQL file, or a Vega-Lite file, then run
   `uv run python scripts/build_dashboard.py`. Never edit `src/dashboards/workflow-monitoring.lvdash.json`
   by hand.
@@ -71,6 +75,8 @@ pull request. Never claim a check that you did not run.
   for that command in the current request.
 - Never pick a Databricks profile. Ask the human, or use the one they named.
 - Keep live SQL validation read-only. Do not create tables or insert test rows.
+- Empty query results prove SQL syntax, fields, and access. They do not prove that a metric is
+  correct.
 - Report each skipped live check as not run, with the reason.
 
 ### GitHub Actions cost guardrails
@@ -87,6 +93,7 @@ pull request. Never claim a check that you did not run.
 - Guard each tool install step with `if: ${{ !env.ACT }}`, so local `act` runs keep the fixed
   image.
 - `runner-guard` is the first job in each workflow. Every other job has `needs: runner-guard`.
+  Keep `.github/workflows/runner-guard.yml` and the `runner-guard` job in `validate.yml`.
 - Live Databricks checks never run on GitHub. `.act/workflows/databricks-validate.yml` is local.
 
 ## Changes and pull requests
@@ -115,5 +122,6 @@ pull request. Never claim a check that you did not run.
 - Trace each requirement from input to stored output and its consumers, and map each acceptance
   criterion to a check.
 - Before you delete code, check callers, dynamic entry points, generated files, tests, and docs.
+- Classify each review finding as fixed, kept with a reason, false positive, or blocked.
 - Separate tool or environment failures from code failures, and never claim stronger proof than
   the evidence.

@@ -5,6 +5,8 @@ set -euo pipefail
 uv_version="0.13.5"
 databricks_cli_version="1.22.1"
 
-curl -LsSf "https://astral.sh/uv/${uv_version}/install.sh" | sh
+# PyPI serves the pinned uv release over HTTPS. devcontainer.json puts ~/.local/bin on PATH.
+python3 -m pip install --user --no-cache-dir "uv==${uv_version}"
+# The Databricks setup script is pinned to its release tag, as in .act/Dockerfile.
 curl -fsSL "https://raw.githubusercontent.com/databricks/setup-cli/v${databricks_cli_version}/install.sh" | sudo sh
 "$HOME/.local/bin/uv" sync --locked

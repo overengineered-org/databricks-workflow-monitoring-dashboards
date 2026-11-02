@@ -3,9 +3,12 @@
 These rules apply to maintainers and to the agents that work for them. Contributors follow
 [AGENTS.md](../AGENTS.md) and [CONTRIBUTING.md](../CONTRIBUTING.md) only.
 
-To make your own agent follow this page, import it from a personal file that Git ignores, for
-example `CLAUDE.local.md` with the line `@docs/maintainers.md`, or `AGENTS.override.md` for
-Codex.
+To make your own agent follow this page, load it from a personal file:
+
+- Claude Code: create `CLAUDE.local.md` in the repository root with the line
+  `@docs/maintainers.md`. Git ignores that file.
+- Codex: Codex has no imports, and an `AGENTS.override.md` replaces `AGENTS.md`. Add this page's
+  rules to your personal `~/.codex/AGENTS.md` instead.
 
 ## Before editing
 

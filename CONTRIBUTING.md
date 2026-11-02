@@ -29,6 +29,8 @@ Every coding agent reads [AGENTS.md](AGENTS.md). Codex, Cursor, GitHub Copilot, 
 Zed read it directly, and `CLAUDE.md` imports it for Claude Code. Keep project rules in
 `AGENTS.md` only.
 
+The Codex app also reads `.codex/environments/environment.toml`, which runs the same scripts.
+
 To work in a container, open the repository in a dev container, for example in GitHub Codespaces
 or VS Code. `.devcontainer/` installs the pinned uv and Databricks CLI and runs
 `uv sync --locked`.

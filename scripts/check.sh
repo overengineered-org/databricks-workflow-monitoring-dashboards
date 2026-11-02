@@ -27,9 +27,13 @@ uv run python -m json.tool "$dashboard_path" >/dev/null
 # grep exits 1 for no match and 2 for an error. Only exit 1 may pass.
 banned_character="$(printf '\342\200\224')"
 set +e
-grep -rIl \
-  --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.ruff_cache --exclude-dir=.databricks \
-  "$banned_character" .
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Scan only what Git would commit: tracked files and new files that are not ignored.
+  git grep -I -l --untracked -e "$banned_character"
+else
+  # act can copy a checkout without usable Git metadata. Its copy holds no local junk.
+  grep -rIl --exclude-dir=.git --exclude-dir=.venv "$banned_character" .
+fi
 grep_status=$?
 set -e
 if [[ "$grep_status" -gt 1 ]]; then

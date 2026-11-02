@@ -13,8 +13,9 @@ In short:
 
 ## Report a problem
 
-Contact the repository owner privately through their [GitHub profile](https://github.com/nijanthan-dev).
-For a problem with a specific comment, you can also use GitHub's **Report content** option.
+Report privately through the repository's **Security** tab: select **Report a vulnerability**
+and start the title with "Conduct:". Only the maintainers can read these reports. For a problem
+with a specific comment, you can also use GitHub's **Report content** option.
 
 The maintainers review every report, keep the reporter's identity private, and can remove
 content or block contributors who break this code.

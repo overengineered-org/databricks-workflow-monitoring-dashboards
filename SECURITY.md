@@ -10,7 +10,7 @@ Do not open a public issue for a security problem. Report it privately on GitHub
 
 Do not include real workspace URLs, tokens, or other credentials in the report. Use fake values.
 
-The maintainers answer within 7 days and agree a disclosure date with you.
+The maintainers answer as soon as they can and agree a disclosure date with you.
 
 ## Supported versions
 
