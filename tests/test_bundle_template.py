@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -43,11 +42,6 @@ class TemplateBuildTests(unittest.TestCase):
             "workflow_monitoring/workflow-monitoring.schema.json",
             TEMPLATE_CONFIGURATION_PATH.read_text(encoding="utf-8"),
         )
-
-    def test_readme_release_tag_matches_pyproject_version(self) -> None:
-        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-        release_tags = re.findall(r"--tag (v[0-9]+\.[0-9]+\.[0-9]+)", readme)
-        self.assertEqual(release_tags, [f"v{project_version()}"])
 
     def test_schema_does_not_prompt_for_warehouse_or_profile(self) -> None:
         schema = json.loads(

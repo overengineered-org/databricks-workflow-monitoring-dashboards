@@ -27,8 +27,8 @@ the "Upgrade steps" release notes section.
 1. Update `project.version` in `pyproject.toml`.
 2. Run `uv lock` so `uv.lock` has the same version.
 3. Run `uv run python scripts/build_template.py` so `VERSION` and the template copy match.
-4. Update the README `--tag`, the README `uv tool install` tag, and the schema URL tag to
-   `v<version>`.
+4. Update the README `uv tool install` tag, the `docs/manual-setup.md` `--tag`, and the schema
+   URL tag to `v<version>`.
 5. Merge the approved pull request with squash. The merge publishes `v<version>`.
 
 ## 3. Check without publishing

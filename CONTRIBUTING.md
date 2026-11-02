@@ -96,7 +96,7 @@ Keep the bundle resource key `workflow_monitoring` and the Job task keys stable.
 User-facing behavior belongs in the README:
 
 - [SLA schedules](README.md#choose-an-sla-schedule)
-- [Production requirements](README.md#6-deploy-to-production)
+- [Production requirements](README.md#5-deploy-to-production)
 
 Tracked configuration and built files must contain fake values only. When dependencies change,
 run `uv lock` and commit `pyproject.toml` with `uv.lock`.

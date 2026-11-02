@@ -7,7 +7,7 @@ The jobs create the dashboard's outcome, recovery, late-delivery, and duration s
 bundle contains no workspace URL, workspace ID, job ID, user name, profile name, or credential.
 
 This example is the only flow that needs a clone of this repository. The monitoring project
-comes from `databricks bundle init` in [README step 1](../../README.md#1-create-the-project).
+comes from `workflow-monitoring init` in [README step 3](../../README.md#3-install-the-cli-and-create-the-project).
 
 ## 1. Deploy paused jobs
 
@@ -46,18 +46,18 @@ All jobs use serverless compute and have a 60-second timeout. Running a job can 
 
 ## 3. Add the jobs to monitoring
 
-Go to your monitoring project folder. Add each Job ID from the bundle summary to
-`workflow-monitoring.yml`, as in [README step 3](../../README.md#3-create-the-configuration).
-Job names come from the Jobs API.
+In your monitoring project folder, tick the four Fast Logistics Jobs, then deploy:
 
-In the monitoring project, run [README steps 4 and 5](../../README.md#4-validate-the-bundle)
-to validate, deploy, and load the dashboard.
+```sh
+workflow-monitoring select-jobs --name-contains "Fast Logistics"
+workflow-monitoring deploy
+```
 
 ## 4. Remove the example
 
 If you added the Jobs to monitoring, remove each Job entry from `workflow-monitoring.yml` in
-the monitoring project. Repeat [README steps 4 and 5](../../README.md#4-validate-the-bundle)
-there. Then remove the four disposable Jobs. Run this from the folder that holds your clone:
+the monitoring project, then run `workflow-monitoring deploy` there. Then remove the four
+disposable Jobs. Run this from the folder that holds your clone:
 
 ```sh
 cd databricks-jobs-monitoring-dashboard/examples/fast-logistics
