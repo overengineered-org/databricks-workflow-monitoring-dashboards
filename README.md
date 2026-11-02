@@ -33,6 +33,9 @@ A first dev deployment takes about 10 minutes when your Databricks profile alrea
 
 ### 1. Create the project
 
+Do not clone this repository to deploy the dashboard. `databricks bundle init` reads one release
+tag and creates a small project that contains only the deployment files.
+
 You need:
 
 | Tool | Minimum |
@@ -50,11 +53,38 @@ cd workflow_monitoring
 v0.2.0 is the first release with the template.
 
 The command creates a project folder named by the `project_name` prompt. The default is
-`workflow_monitoring`. Change the `cd` command if you choose another name.
+`workflow_monitoring`. Change the `cd` command if you choose another name. The other prompts set
+the catalog, schema, catalog creation, default timezone, and dashboard viewer group.
 
-The command copies the product files into `workflow_monitoring/` and creates the bundle and
-configuration files that you own. Do not edit `workflow_monitoring/`. To upgrade the product
-files, replace that folder with a newer release. The folder `README.md` has the steps.
+The project contains these files:
+
+```text
+workflow_monitoring/
+  .gitignore                                  You own
+  databricks.yml                              You own: bundle variables and targets
+  workflow-monitoring.yml                     You own: monitored Jobs and SLAs
+  resources/
+    workflow-monitoring.collector.job.yml     You own: collector Job and schedule
+    workflow-monitoring.dashboard.yml         You own: dashboard resource
+  workflow_monitoring/                        Product-owned: do not edit
+    README.md                                 Upgrade steps
+    VERSION
+    collector/                                Collector Python files
+    dashboard/workflow-monitoring.lvdash.json
+    workflow-monitoring.schema.json
+```
+
+Do not edit the inner `workflow_monitoring/` folder. To upgrade the product files, replace that
+folder with a newer release. The folder `README.md` has the steps.
+
+Track the project in your own Git repository. The `.gitignore` file excludes the local
+`.databricks/` folder.
+
+```sh
+git init
+git add .
+git commit -m "Add workflow monitoring project"
+```
 
 ### 2. Get the required IDs
 
@@ -69,6 +99,15 @@ databricks jobs list --profile <profile>
 ```
 
 Keep the SQL warehouse ID and each Job ID you want to monitor.
+
+Set the warehouse ID in your shell. The bundle commands in this README read it. Set it again in
+each new shell:
+
+```sh
+export BUNDLE_VAR_warehouse_id=<warehouse-id>
+```
+
+You can also pass `--var="warehouse_id=<warehouse-id>"` to each bundle command.
 
 ### 3. Create the configuration
 
@@ -88,45 +127,60 @@ workflows:
 ```
 
 The collector reads this file on every run and replaces the active workflow rows in
-`workflow_sla_config`. To use an existing catalog and schema, set the `catalog` and `schema`
-bundle variables. Keep `create_catalog_and_schema_if_missing` set to `false` so the collector
-never runs `CREATE CATALOG` or `CREATE SCHEMA`. Both modes create the three collector tables when
-missing.
+`workflow_sla_config`.
+
+The `catalog` and `schema` init prompts set the bundle variables of the same names in
+`databricks.yml`. The `create_catalog_and_schema_if_missing` prompt sets catalog creation:
+
+| Answer | Result |
+| --- | --- |
+| `yes` (default) | The collector creates the catalog and schema when they are missing. The run identity needs the rights to create them. |
+| `no` | You bring an existing catalog and schema. The collector never runs `CREATE CATALOG` or `CREATE SCHEMA`. |
+
+Both answers create the three collector tables when missing. To change the answer later, edit
+the `create_catalog_and_schema_if_missing` default in `databricks.yml`.
 
 ### 4. Validate the bundle
 
 ```sh
-databricks bundle validate --strict -t dev --profile <profile> \
-  --var="warehouse_id=<warehouse-id>"
+databricks bundle validate --strict -t dev --profile <profile>
 ```
 
 This command checks the bundle files. It does not read `workflow-monitoring.yml`. The collector
 Job run checks that file and lists every error. The `yaml-language-server` schema comment at the
 top of `workflow-monitoring.yml` gives editor checks while you type.
 
-Do not edit the built dashboard directly. Maintainers rebuild it after scaffold changes. See
-[Contributing](CONTRIBUTING.md#2-edit-the-owning-source).
-
 ### 5. Deploy and load the first data
 
 These commands create workspace resources and run serverless compute:
 
-For the first deploy, pass `--var="create_catalog_and_schema_if_missing=true"` so the collector
-can create the default catalog and schema. Leave it set to `false` when you bring your own
-catalog and schema.
-
 ```sh
-databricks bundle deploy -t dev --profile <profile> \
-  --var="warehouse_id=<warehouse-id>" \
-  --var="create_catalog_and_schema_if_missing=true"
+databricks bundle deploy -t dev --profile <profile>
 
-databricks bundle run workflow_monitoring_jobs_api_collector \
-  -t dev --profile <profile> \
-  --var="warehouse_id=<warehouse-id>"
+databricks bundle run workflow_monitoring_jobs_api_collector -t dev --profile <profile>
 ```
 
 Done means one collector Job, three Delta tables, and one refreshed AI/BI dashboard exist in the
 selected workspace. The dashboard shows data after the first collector run.
+
+### 6. Deploy to production
+
+Complete this checklist before the first prod deploy:
+
+1. Add bundle `run_as` configuration for a service principal.
+2. Grant the run identity access to configured Jobs and the three Delta tables.
+3. Grant dashboard refresh access and SQL warehouse access.
+4. Confirm the viewer group in the bundle settings.
+
+Then validate and deploy the prod target:
+
+```sh
+databricks bundle validate --strict -t prod --profile <profile>
+databricks bundle deploy -t prod --profile <profile>
+```
+
+The prod target unpauses the collector schedule. The collector then runs every 5 minutes on
+serverless compute.
 
 ## Manage monitored Jobs
 
@@ -192,12 +246,7 @@ day in shorter months.
 - How are success rate and run duration changing?
 - Is Jobs API collection healthy and current?
 
-## Before production
-
-1. Add bundle `run_as` configuration for a service principal.
-2. Grant the run identity access to configured Jobs and the three Delta tables.
-3. Grant dashboard refresh access and SQL warehouse access.
-4. Confirm the viewer group in the bundle settings.
+## Limits
 
 Five minutes is a polling target, not real-time alerting. Run state follows the 60-day Jobs API
 history window. Runs outside that window, or no longer returned by the API, are removed instead of

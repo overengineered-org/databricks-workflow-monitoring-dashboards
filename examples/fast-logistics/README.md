@@ -6,12 +6,16 @@ start compute.
 The jobs create the dashboard's outcome, recovery, late-delivery, and duration scenarios. The
 bundle contains no workspace URL, workspace ID, job ID, user name, profile name, or credential.
 
+This example is the only flow that needs a clone of this repository. The monitoring project
+comes from `databricks bundle init` in [README step 1](../../README.md#1-create-the-project).
+
 ## 1. Deploy paused jobs
 
-From the repository root, use the Databricks CLI profile you selected:
+Clone this repository, then use the Databricks CLI profile you selected:
 
 ```sh
-cd examples/fast-logistics
+git clone https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard.git
+cd databricks-jobs-monitoring-dashboard/examples/fast-logistics
 databricks bundle validate --strict -t dev --profile <profile>
 databricks bundle deploy -t dev --profile <profile>
 databricks bundle summary -t dev --profile <profile>
@@ -42,21 +46,21 @@ All jobs use serverless compute and have a 60-second timeout. Running a job can 
 
 ## 3. Add the jobs to monitoring
 
-Return to the repository root. Repeat the add command from
-[README step 3](../../README.md#3-create-the-configuration) for each Job ID from the bundle
-summary. Job names come from the Jobs API.
+Go to your monitoring project folder. Add each Job ID from the bundle summary to
+`workflow-monitoring.yml`, as in [README step 3](../../README.md#3-create-the-configuration).
+Job names come from the Jobs API.
 
-Run [README steps 4 and 5](../../README.md#4-validate-the-bundle) to validate, deploy, and
-load the dashboard.
+In the monitoring project, run [README steps 4 and 5](../../README.md#4-validate-the-bundle)
+to validate, deploy, and load the dashboard.
 
 ## 4. Remove the example
 
-If you added the Jobs to monitoring, remove each Job entry from `workflow-monitoring.yml`.
-Repeat [README steps 4 and 5](../../README.md#4-validate-the-bundle). Then remove the
-four disposable Jobs:
+If you added the Jobs to monitoring, remove each Job entry from `workflow-monitoring.yml` in
+the monitoring project. Repeat [README steps 4 and 5](../../README.md#4-validate-the-bundle)
+there. Then remove the four disposable Jobs. Run this from the folder that holds your clone:
 
 ```sh
-cd examples/fast-logistics
+cd databricks-jobs-monitoring-dashboard/examples/fast-logistics
 databricks bundle destroy --auto-approve -t dev --profile <profile>
 ```
 
