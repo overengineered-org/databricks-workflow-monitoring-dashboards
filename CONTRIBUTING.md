@@ -25,11 +25,9 @@ You need [uv](https://docs.astral.sh/uv/) and Git. The full gate also needs Dock
 uv sync --locked
 ```
 
-Every coding agent reads [AGENTS.md](AGENTS.md). Codex, Cursor, GitHub Copilot, Jules, Amp, and
-Zed read it directly, and `CLAUDE.md` imports it for Claude Code. Keep project rules in
-`AGENTS.md` only.
-
-The Codex app also reads `.codex/environments/environment.toml`, which runs the same scripts.
+Every coding agent reads [AGENTS.md](AGENTS.md): Claude Code 2.1.277 or later, Codex, Cursor,
+GitHub Copilot, Jules, Amp, and Zed. Keep project rules in `AGENTS.md` only, and do not add
+tool-specific instruction files.
 
 To work in a container, open the repository in a dev container, for example in GitHub Codespaces
 or VS Code. `.devcontainer/` installs the pinned uv and Databricks CLI and runs

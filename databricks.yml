@@ -13,7 +13,6 @@ sync:
   exclude:
     - "*.md"
     - .act/**
-    - .codex/**
     - .github/**
     - docs/**
     - examples/**
