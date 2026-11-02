@@ -47,7 +47,7 @@ You need:
 lists the Jobs in your workspace, and adds the Jobs that you tick to `workflow-monitoring.yml`:
 
 ```sh
-uv tool install git+https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard@v0.3.0
+uv tool install git+https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard@v0.3.1
 databricks auth profiles
 workflow-monitoring init --profile <profile>
 cd workflow_monitoring
@@ -61,13 +61,13 @@ compute.
 
 ```sh
 databricks bundle init https://github.com/overengineered-org/databricks-jobs-monitoring-dashboard \
-  --tag v0.3.0 \
+  --tag v0.3.1 \
   --template-dir template \
   --output-dir .
 cd workflow_monitoring
 ```
 
-v0.2.0 is the first release with the template. v0.3.0 adds the `workflow-monitoring` CLI.
+v0.2.0 is the first release with the template. v0.3.1 adds the `workflow-monitoring` CLI.
 
 The command creates a project folder named by the `project_name` prompt. The default is
 `workflow_monitoring`. Change the `cd` command if you choose another name. The other prompts set
